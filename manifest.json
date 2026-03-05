@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "WA Bulk Sender",
+  "version": "1.0.0",
+  "description": "Send bulk WhatsApp messages with smart human-like delays to avoid restrictions",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "WA Bulk Sender"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

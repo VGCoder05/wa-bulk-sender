@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WA Bulk Sender</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <div class="header">
+      <h1>📨 WA Bulk Sender</h1>
+      <p class="subtitle">Smart WhatsApp Bulk Messaging</p>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="contacts">📇 Contacts</button>
+      <button class="tab" data-tab="message">💬 Message</button>
+      <button class="tab" data-tab="send">🚀 Send</button>
+      <button class="tab" data-tab="settings">⚙️ Settings</button>
+    </div>
+
+    <!-- CONTACTS TAB -->
+    <div class="tab-content active" id="contacts">
+      <div class="section">
+        <h3>Import Contacts</h3>
+
+        <label class="file-upload" id="csvUploadLabel">
+          📂 Upload CSV / TXT File
+          <input type="file" id="csvUpload" accept=".csv,.txt,.xlsx" hidden>
+        </label>
+
+        <div class="divider">— OR paste numbers below —</div>
+
+        <textarea id="numbersInput" placeholder="Enter numbers (one per line):
+91XXXXXXXXXX
+91XXXXXXXXXX
++1234567890
+
+Or with names:
+91XXXXXXXXXX, John
+91XXXXXXXXXX, Jane"></textarea>
+
+        <button class="btn btn-primary" id="addNumbersBtn">➕ Add Numbers</button>
+
+        <div class="contact-stats">
+          <span id="contactCount">0</span> contacts loaded
+          <button class="btn btn-small btn-danger" id="clearContactsBtn">🗑️ Clear All</button>
+        </div>
+
+        <div id="contactPreview" class="contact-preview"></div>
+      </div>
+    </div>
+
+    <!-- MESSAGE TAB -->
+    <div class="tab-content" id="message">
+      <div class="section">
+        <h3>Message Template</h3>
+
+        <div class="templates">
+          <button class="template-btn" data-template="community">🏘️ Community Invite</button>
+          <button class="template-btn" data-template="group">👥 Group Invite</button>
+          <button class="template-btn" data-template="announce">📢 Announcement</button>
+          <button class="template-btn" data-template="custom">✏️ Custom</button>
+        </div>
+
+        <textarea id="messageInput" rows="6" placeholder="Type your message here...
+
+Use placeholders:
+{name} = Contact name
+{link} = Your invite link"></textarea>
+
+        <div class="field">
+          <label>🔗 Invite Link (optional):</label>
+          <input type="text" id="inviteLink" placeholder="https://chat.whatsapp.com/xxxxx">
+        </div>
+
+        <div class="checkbox-field">
+          <input type="checkbox" id="useVariants" checked>
+          <label for="useVariants">🔀 Use message variants (anti-detection)</label>
+        </div>
+
+        <div id="variantsSection">
+          <h4>Message Variants (one per line):</h4>
+          <textarea id="variantsInput" rows="4" placeholder="Hey {name}! Join our group: {link}
+Hi {name}, check out our community: {link}
+{name}, you're invited! Join here: {link}"></textarea>
+        </div>
+
+        <div class="msg-preview">
+          <h4>📋 Preview:</h4>
+          <div id="messagePreview" class="preview-box">Your message will appear here...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SEND TAB -->
+    <div class="tab-content" id="send">
+      <div class="section">
+        <div class="status-card" id="statusCard">
+          <div class="status-icon" id="statusIcon">⏳</div>
+          <div class="status-text" id="statusText">Ready to send</div>
+        </div>
+
+        <div class="progress-container">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-stats">
+            <span>✅ <span id="sentCount">0</span></span>
+            <span>❌ <span id="failedCount">0</span></span>
+            <span>⏳ <span id="remainingCount">0</span></span>
+          </div>
+        </div>
+
+        <div class="send-controls">
+          <button class="btn btn-success btn-large" id="startBtn">🚀 Start Sending</button>
+          <button class="btn btn-warning" id="pauseBtn" disabled>⏸️ Pause</button>
+          <button class="btn btn-danger" id="stopBtn" disabled>⏹️ Stop</button>
+        </div>
+
+        <div class="eta-display">
+          <span>⏱️ ETA: <span id="etaDisplay">--</span></span>
+          <span>📊 Rate: <span id="rateDisplay">--</span></span>
+        </div>
+
+        <div class="log-container">
+          <h4>📋 Activity Log:</h4>
+          <div id="activityLog" class="activity-log"></div>
+        </div>
+
+        <button class="btn btn-small" id="exportLogBtn">📥 Export Log</button>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div class="tab-content" id="settings">
+      <div class="section">
+        <h3>⚙️ Delay Settings</h3>
+
+        <div class="field">
+          <label>⏱️ Min Delay (seconds):</label>
+          <input type="number" id="minDelay" value="25" min="10" max="120">
+          <small>Minimum 10s recommended</small>
+        </div>
+
+        <div class="field">
+          <label>⏱️ Max Delay (seconds):</label>
+          <input type="number" id="maxDelay" value="60" min="15" max="180">
+        </div>
+
+        <h3>📦 Batch Settings</h3>
+
+        <div class="field">
+          <label>📦 Messages per batch:</label>
+          <input type="number" id="batchSize" value="15" min="5" max="50">
+        </div>
+
+        <div class="field">
+          <label>☕ Batch pause (seconds):</label>
+          <input type="number" id="batchPause" value="300" min="60" max="900">
+          <small>Break between batches (default 5 min)</small>
+        </div>
+
+        <h3>🛡️ Safety Settings</h3>
+
+        <div class="field">
+          <label>📊 Daily message limit:</label>
+          <input type="number" id="dailyLimit" value="200" min="50" max="500">
+          <small>Recommended: 150-250 per day</small>
+        </div>
+
+        <div class="checkbox-field">
+          <input type="checkbox" id="autoRetry" checked>
+          <label for="autoRetry">🔄 Auto-retry failed messages</label>
+        </div>
+
+        <div class="checkbox-field">
+          <input type="checkbox" id="keepAlive" checked>
+          <label for="keepAlive">💓 Keep WhatsApp Web alive</label>
+        </div>
+
+        <button class="btn btn-primary" id="saveSettingsBtn">💾 Save Settings</button>
+        <button class="btn btn-small" id="resetSettingsBtn">🔄 Reset to Default</button>
+
+        <div class="safety-info">
+          <h4>🛡️ Anti-Ban Tips:</h4>
+          <ul>
+            <li>Keep minimum delay ≥ 25 seconds</li>
+            <li>Don't send more than 200/day initially</li>
+            <li>Start with 50/day, increase gradually</li>
+            <li>Use message variants</li>
+            <li>Use a WhatsApp Business account</li>
+            <li>Don't run 24/7 — take breaks</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span>WA Bulk Sender v1.0</span>
+      <span>⚡ Use Responsibly</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
