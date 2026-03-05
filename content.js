@@ -1,133 +1,159 @@
-// ===== WA BULK SENDER — CONTENT SCRIPT =====
-// This script runs on web.whatsapp.com and controls the WhatsApp Web interface
+// ===== WA BULK SENDER — CONTENT SCRIPT (FIXED) =====
+// This script ONLY handles clicking Send button.
+// Navigation is handled by popup.js via chrome.tabs.update()
 
-console.log("🟢 WA Bulk Sender: Content script loaded!");
+console.log("🟢 WA Bulk Sender: Content script loaded on", window.location.href);
 
 // ===== MESSAGE LISTENER =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "SEND_MESSAGE") {
-    handleSendMessage(message.number, message.message)
+
+  // Health check — popup pings this to know content script is alive
+  if (message.type === "PING") {
+    sendResponse({ pong: true });
+    return false; // Synchronous — no need to keep channel open
+  }
+
+  // Main job: Click the send button
+  if (message.type === "CLICK_SEND") {
+    handleClickSend()
       .then(result => sendResponse(result))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true; // Keep channel open for async response
   }
 
-  if (message.type === "CHECK_READY") {
-    const ready = !!document.querySelector('[data-testid="chat-list"]');
-    sendResponse({ ready });
-    return true;
-  }
+  return false;
 });
 
-// ===== MAIN SEND FUNCTION =====
-async function handleSendMessage(number, messageText) {
+// ===== CLICK SEND HANDLER =====
+async function handleClickSend() {
   try {
-    console.log(`📤 Sending to: ${number}`);
+    console.log("📤 WA Bulk Sender: Waiting for chat to load...");
 
-    // Step 1: Open chat via URL (works for unsaved numbers too!)
-    const url = `https://web.whatsapp.com/send?phone=${number}&text=${encodeURIComponent(messageText)}`;
-    console.log("url: ", url)
+    // Step 1: Wait for the conversation panel to appear
+    const chatPanel = await waitForElement(
+      '[data-testid="conversation-panel-wrapper"]',
+      20000
+    );
 
-    window.location.href = url;
+    if (!chatPanel) {
+      // Check if there's an "invalid number" popup
+      const popup = document.querySelector('[data-testid="popup-container"]');
+      if (popup) {
+        const text = popup.textContent.toLowerCase();
+        if (text.includes("invalid") || text.includes("doesn't") || text.includes("not on whatsapp")) {
+          const okBtn = popup.querySelector("button");
+          if (okBtn) okBtn.click();
+          return { success: false, error: "Number not on WhatsApp" };
+        }
+      }
+      return { success: false, error: "Chat panel did not load" };
+    }
 
-    // Step 2: Wait for chat to load
-    await waitForElement('[data-testid="conversation-panel-wrapper"]', 25000);
+    // Step 2: Wait extra time for the message to be pre-filled by the URL ?text= param
     await humanDelay(2000, 4000);
 
-    // Step 3: Check if number is valid (look for error/invalid indicators)
-    const invalidIndicator = document.querySelector('[data-testid="popup-container"]');
-    if (invalidIndicator) {
-      const popupText = invalidIndicator.textContent.toLowerCase();
-      if (popupText.includes("invalid") || popupText.includes("doesn't have") || popupText.includes("not on whatsapp")) {
-        // Close popup
-        const okBtn = invalidIndicator.querySelector("button");
+    // Step 3: Check for invalid number popup again (sometimes appears late)
+    const latePopup = document.querySelector('[data-testid="popup-container"]');
+    if (latePopup) {
+      const text = latePopup.textContent.toLowerCase();
+      if (text.includes("invalid") || text.includes("doesn't") || text.includes("not on whatsapp")) {
+        const okBtn = latePopup.querySelector("button");
         if (okBtn) okBtn.click();
-        await humanDelay(500, 1000);
         return { success: false, error: "Number not on WhatsApp" };
       }
     }
 
-    // Step 4: Find the input field / message box
-    const inputBox = await waitForElement(
-      '[data-testid="conversation-compose-box-input"], div[contenteditable="true"][data-tab="10"]',
+    // Step 4: Simulate human behavior
+    await simulateHumanBehavior();
+
+    // Step 5: Find the Send button
+    const sendButton = await waitForElement(
+      '[data-testid="send"], [data-testid="compose-btn-send"], span[data-icon="send"]',
       15000
     );
 
-    if (!inputBox) {
-      return { success: false, error: "Could not find message input box" };
-    }
-
-    // Step 5: The URL method usually pre-fills the message
-    // Just need to verify and hit send
-    await humanDelay(1500, 3000);
-
-    // Step 6: Simulate human-like mouse movement
-    await simulateHumanBehavior();
-
-    // Step 7: Find and click the Send button
-    const sendButton = await waitForElement('[data-testid="send"], [data-testid="compose-btn-send"], span[data-icon="send"]', 10000);
-
     if (sendButton) {
+      // Get the actual clickable button element
+      const clickTarget = sendButton.closest("button") || sendButton;
+
       await humanDelay(500, 1500);
 
       // Click with realistic mouse events
-      simulateRealisticClick(sendButton);
+      simulateRealisticClick(clickTarget);
 
-      // Wait for message to be sent
+      // Wait and verify
       await humanDelay(2000, 4000);
 
-      // Verify message was sent (check for tick marks)
-      const messageSent = await verifyMessageSent();
-
-      console.log(`✅ Message sent to ${number}`);
+      console.log("✅ WA Bulk Sender: Send button clicked!");
       return { success: true };
+
     } else {
-      // Try pressing Enter as fallback
+      // Fallback: Try pressing Enter on the input box
+      console.log("⚠️ Send button not found, trying Enter key fallback...");
+
+      const inputBox = document.querySelector(
+        '[data-testid="conversation-compose-box-input"], div[contenteditable="true"][data-tab="10"]'
+      );
+
       if (inputBox) {
         inputBox.focus();
         await humanDelay(300, 600);
-        const enterEvent = new KeyboardEvent("keydown", {
+
+        inputBox.dispatchEvent(new KeyboardEvent("keydown", {
           key: "Enter",
           code: "Enter",
           keyCode: 13,
           which: 13,
-          bubbles: true
-        });
-        inputBox.dispatchEvent(enterEvent);
+          bubbles: true,
+          cancelable: true
+        }));
+
         await humanDelay(2000, 3000);
-        console.log(`✅ Message sent to ${number} (via Enter key)`);
+
+        console.log("✅ WA Bulk Sender: Enter key pressed!");
         return { success: true };
       }
-      return { success: false, error: "Send button not found" };
+
+      return { success: false, error: "No send button or input box found" };
     }
 
   } catch (err) {
-    console.error(`❌ Error sending to ${number}:`, err);
+    console.error("❌ WA Bulk Sender error:", err);
     return { success: false, error: err.message };
   }
 }
 
-// ===== WAIT FOR ELEMENT =====
+// ===== WAIT FOR ELEMENT (with MutationObserver) =====
 function waitForElement(selector, timeout = 15000) {
   return new Promise((resolve) => {
-    // Check if already exists
+    // Check immediately
     const existing = document.querySelector(selector);
     if (existing) return resolve(existing);
 
+    let resolved = false;
+
     const observer = new MutationObserver(() => {
       const el = document.querySelector(selector);
-      if (el) {
+      if (el && !resolved) {
+        resolved = true;
         observer.disconnect();
         resolve(el);
       }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true
+    });
 
-    // Timeout
+    // Timeout fallback
     setTimeout(() => {
-      observer.disconnect();
-      resolve(document.querySelector(selector));
+      if (!resolved) {
+        resolved = true;
+        observer.disconnect();
+        resolve(document.querySelector(selector)); // Could be null
+      }
     }, timeout);
   });
 }
@@ -147,14 +173,12 @@ async function simulateHumanBehavior() {
   }
 
   // Random mouse movement
-  const randomX = Math.floor(Math.random() * window.innerWidth);
-  const randomY = Math.floor(Math.random() * window.innerHeight);
   document.dispatchEvent(new MouseEvent("mousemove", {
-    clientX: randomX,
-    clientY: randomY,
+    clientX: Math.floor(Math.random() * window.innerWidth),
+    clientY: Math.floor(Math.random() * window.innerHeight),
     bubbles: true
   }));
-  await humanDelay(100, 300);
+  await humanDelay(200, 500);
 }
 
 // ===== REALISTIC CLICK =====
@@ -163,36 +187,34 @@ function simulateRealisticClick(element) {
   const x = rect.left + rect.width / 2 + (Math.random() * 6 - 3);
   const y = rect.top + rect.height / 2 + (Math.random() * 6 - 3);
 
-  const events = [
-    new MouseEvent("mouseenter", { clientX: x, clientY: y, bubbles: true }),
-    new MouseEvent("mouseover", { clientX: x, clientY: y, bubbles: true }),
-    new MouseEvent("mousemove", { clientX: x, clientY: y, bubbles: true }),
-    new MouseEvent("mousedown", { clientX: x, clientY: y, bubbles: true, button: 0 }),
-    new MouseEvent("mouseup", { clientX: x, clientY: y, bubbles: true, button: 0 }),
-    new MouseEvent("click", { clientX: x, clientY: y, bubbles: true, button: 0 })
-  ];
+  const commonProps = {
+    clientX: x,
+    clientY: y,
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    button: 0
+  };
 
-  events.forEach((event, i) => {
-    setTimeout(() => element.dispatchEvent(event), i * (30 + Math.random() * 50));
-  });
-}
+  // Fire events synchronously with small offsets
+  element.dispatchEvent(new MouseEvent("mouseenter", commonProps));
+  element.dispatchEvent(new MouseEvent("mouseover", commonProps));
+  element.dispatchEvent(new MouseEvent("mousemove", commonProps));
+  element.dispatchEvent(new MouseEvent("mousedown", commonProps));
+  element.dispatchEvent(new MouseEvent("mouseup", commonProps));
+  element.dispatchEvent(new MouseEvent("click", commonProps));
 
-// ===== VERIFY MESSAGE SENT =====
-async function verifyMessageSent() {
-  await humanDelay(1000, 2000);
-  // Look for message status indicators (single tick, double tick)
-  const ticks = document.querySelectorAll('[data-icon="msg-check"], [data-icon="msg-dblcheck"], [data-testid="msg-check"], [data-testid="msg-dblcheck"]');
-  return ticks.length > 0;
+  // Also try .click() as absolute fallback
+  try { element.click(); } catch(e) {}
 }
 
 // ===== KEEP ALIVE =====
 setInterval(() => {
-  // Prevent WhatsApp Web from going idle
   document.dispatchEvent(new MouseEvent("mousemove", {
     clientX: Math.random() * 500,
     clientY: Math.random() * 500,
     bubbles: true
   }));
-}, 120000); // Every 2 minutes
+}, 120000);
 
-console.log("🟢 WA Bulk Sender: Ready and waiting for commands!");
+console.log("🟢 WA Bulk Sender: Ready and listening for commands!");

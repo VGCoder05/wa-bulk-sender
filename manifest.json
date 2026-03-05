@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "WA Bulk Sender",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Send bulk WhatsApp messages with smart human-like delays to avoid restrictions",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": ["activeTab", "storage", "scripting", "tabs"],
   "host_permissions": ["https://web.whatsapp.com/*"],
   "background": {
     "service_worker": "background.js"

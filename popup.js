@@ -12,6 +12,7 @@ let settings = {
 let isSending = false;
 let isPaused = false;
 let logEntries = [];
+let waTabId = null;
 
 // ===== INIT =====
 document.addEventListener("DOMContentLoaded", () => {
@@ -37,10 +38,8 @@ function initTabs() {
 
 // ===== CONTACTS TAB =====
 function initContacts() {
-  // CSV Upload
   document.getElementById("csvUpload").addEventListener("change", handleFileUpload);
 
-  // Manual add
   document.getElementById("addNumbersBtn").addEventListener("click", () => {
     const text = document.getElementById("numbersInput").value.trim();
     if (!text) return alert("Please enter some numbers!");
@@ -48,7 +47,6 @@ function initContacts() {
     document.getElementById("numbersInput").value = "";
   });
 
-  // Clear all
   document.getElementById("clearContactsBtn").addEventListener("click", () => {
     if (confirm("Clear all contacts?")) {
       contacts = [];
@@ -77,18 +75,15 @@ function parseAndAddContacts(text) {
   let added = 0;
 
   lines.forEach(line => {
-    // Skip header lines
     if (line.toLowerCase().includes("name") && line.toLowerCase().includes("phone")) return;
     if (line.toLowerCase().includes("number") && line.toLowerCase().includes("name")) return;
 
-    // Parse: could be "number, name" or "name, number" or just "number"
     let number = "";
     let name = "";
 
     const parts = line.split(/[,;\t]+/).map(p => p.trim());
 
     if (parts.length >= 2) {
-      // Figure out which part is the number
       if (/[\d+]/.test(parts[0]) && parts[0].replace(/\D/g, "").length >= 7) {
         number = parts[0];
         name = parts.slice(1).join(" ");
@@ -103,7 +98,6 @@ function parseAndAddContacts(text) {
       number = parts[0];
     }
 
-    // Clean number
     number = number.replace(/[\s\-\(\)\.]/g, "");
     if (!number.startsWith("+")) {
       number = number.replace(/^0+/, "");
@@ -111,7 +105,6 @@ function parseAndAddContacts(text) {
     number = number.replace(/^\+/, "");
 
     if (number.replace(/\D/g, "").length >= 7) {
-      // Check duplicate
       if (!contacts.find(c => c.number === number)) {
         contacts.push({ number, name: name || "Unknown" });
         added++;
@@ -150,27 +143,9 @@ function updateContactUI() {
 // ===== MESSAGE TAB =====
 function initMessage() {
   const templates = {
-    community: `Hey {name}! 👋
-
-I've created an amazing community and I'd love for you to join! 🎉
-
-👉 Join here: {link}
-
-Looking forward to seeing you there! 🙌`,
-    group: `Hi {name}! 😊
-
-You're invited to join our WhatsApp group!
-
-🔗 Join: {link}
-
-See you inside! 🚀`,
-    announce: `Hello {name},
-
-We have an exciting update to share with you! 📢
-
-Check it out here: {link}
-
-Stay tuned for more! ⭐`,
+    community: `Hey {name}! 👋\n\nI've created an amazing community and I'd love for you to join! 🎉\n\n👉 Join here: {link}\n\nLooking forward to seeing you there! 🙌`,
+    group: `Hi {name}! 😊\n\nYou're invited to join our WhatsApp group!\n\n🔗 Join: {link}\n\nSee you inside! 🚀`,
+    announce: `Hello {name},\n\nWe have an exciting update to share with you! 📢\n\nCheck it out here: {link}\n\nStay tuned for more! ⭐`,
     custom: ""
   };
 
@@ -208,19 +183,99 @@ function initSend() {
   document.getElementById("exportLogBtn").addEventListener("click", exportLog);
 }
 
+// =============================================
+// ====== CORE SENDING LOGIC (FIXED) ==========
+// =============================================
+
+// Navigate WhatsApp tab to a URL and wait for it to fully load
+function navigateTab(tabId, url) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      // Resolve anyway — page might be usable even if event didn't fire perfectly
+      resolve();
+    }, 30000);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeout);
+        resolve();
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.update(tabId, { url });
+  });
+}
+
+// Ping content script until it responds (waits for injection after navigation)
+async function waitForContentScript(tabId, maxRetries = 15) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: "PING" });
+      if (response && response.pong) {
+        return true;
+      }
+    } catch (e) {
+      // Content script not injected yet — keep waiting
+    }
+    await sleep(2000);
+  }
+  throw new Error("Content script failed to load after navigation");
+}
+
+// Send a message to content script with retry
+async function sendToContentWithRetry(tabId, message, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      return response;
+    } catch (e) {
+      if (i === maxRetries - 1) throw e;
+      addLog(`⚠️ Retry ${i + 1}/${maxRetries} — reconnecting...`, "warning");
+      await sleep(3000);
+    }
+  }
+}
+
+// Send one message to one contact
+async function sendToContact(tabId, contact, messageText) {
+  // Step 1: Build the WhatsApp send URL (pre-fills message)
+  const url = `https://web.whatsapp.com/send?phone=${contact.number}&text=${encodeURIComponent(messageText)}`;
+
+  // Step 2: Navigate the tab (from popup — does NOT kill content script context)
+  addLog(`🔗 Opening chat for ${contact.name}...`, "info");
+  await navigateTab(tabId, url);
+
+  // Step 3: Extra wait for WhatsApp Web JS to initialize
+  await sleep(3000);
+
+  // Step 4: Wait for content script to be alive on the new page
+  addLog(`🔌 Waiting for page to be ready...`, "info");
+  await waitForContentScript(tabId);
+
+  // Step 5: Tell content script to click the Send button
+  addLog(`📤 Sending message...`, "info");
+  const response = await sendToContentWithRetry(tabId, { type: "CLICK_SEND" });
+
+  return response;
+}
+
+// Main sending loop
 async function startSending() {
   if (contacts.length === 0) return alert("No contacts loaded! Go to Contacts tab first.");
   const msg = document.getElementById("messageInput").value.trim();
   if (!msg) return alert("No message! Go to Message tab first.");
 
-  // Check if WhatsApp Web tab is open
+  // Find WhatsApp Web tab
   const [tab] = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" });
   if (!tab) return alert("Please open web.whatsapp.com first!");
+  waTabId = tab.id;
 
   isSending = true;
   isPaused = false;
 
-  // UI Updates
   document.getElementById("startBtn").disabled = true;
   document.getElementById("pauseBtn").disabled = false;
   document.getElementById("stopBtn").disabled = false;
@@ -258,24 +313,37 @@ async function startSending() {
       .replace(/\{name\}/g, contacts[i].name || "")
       .replace(/\{link\}/g, link);
 
-    // Send via content script
+    // ===== SEND (FIXED APPROACH) =====
     try {
-      const response = await chrome.tabs.sendMessage(tab.id, {
-        type: "SEND_MESSAGE",
-        number: contacts[i].number,
-        message: currentMsg
-      });
+      const response = await sendToContact(waTabId, contacts[i], currentMsg);
 
       if (response && response.success) {
         sent++;
         addLog(`✅ Sent to ${contacts[i].name} (${contacts[i].number})`, "success");
       } else {
         failed++;
-        addLog(`❌ Failed: ${contacts[i].name} - ${response?.error || "Unknown error"}`, "error");
+        const errMsg = response?.error || "Unknown error";
+        addLog(`❌ Failed: ${contacts[i].name} — ${errMsg}`, "error");
+
+        // Auto-retry once
+        if (settings.autoRetry) {
+          addLog(`🔄 Retrying ${contacts[i].name}...`, "warning");
+          await sleep(5000);
+          try {
+            const retry = await sendToContact(waTabId, contacts[i], currentMsg);
+            if (retry && retry.success) {
+              sent++;
+              failed--; // Undo the failure count
+              addLog(`✅ Retry succeeded for ${contacts[i].name}`, "success");
+            }
+          } catch (retryErr) {
+            addLog(`❌ Retry also failed for ${contacts[i].name}`, "error");
+          }
+        }
       }
     } catch (err) {
       failed++;
-      addLog(`❌ Error: ${contacts[i].name} - ${err.message}`, "error");
+      addLog(`❌ Error: ${contacts[i].name} — ${err.message}`, "error");
     }
 
     remaining = contacts.length - i - 1;
@@ -288,7 +356,7 @@ async function startSending() {
     const progress = ((i + 1) / contacts.length) * 100;
     document.getElementById("progressFill").style.width = progress + "%";
 
-    // ETA calculation
+    // ETA
     const elapsed = (Date.now() - startTime) / 1000;
     const rate = (i + 1) / elapsed;
     const eta = remaining / rate;
@@ -306,7 +374,7 @@ async function startSending() {
       }
     }
 
-    // Random delay
+    // Random delay between messages
     if (i < contacts.length - 1 && isSending) {
       const delay = randomDelay(settings.minDelay, settings.maxDelay);
       addLog(`⏳ Waiting ${delay}s...`, "info");
@@ -317,7 +385,7 @@ async function startSending() {
       }
     }
 
-    // Daily limit check
+    // Daily limit
     if (sent >= settings.dailyLimit) {
       addLog(`🛡️ Daily limit (${settings.dailyLimit}) reached! Stopping.`, "warning");
       break;
@@ -414,6 +482,11 @@ function addLog(message, type = "info") {
     div.textContent = `[${time}] ${message}`;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+
+    // Keep max 200 entries in DOM
+    while (log.children.length > 200) {
+      log.removeChild(log.firstChild);
+    }
   }
 }
 
@@ -450,7 +523,7 @@ function formatTime(seconds) {
   return `${mins}m ${secs}s`;
 }
 
-// ===== STATE PERSISTENCE =====
+// ===== STATE =====
 function saveState() {
   chrome.storage.local.set({ contacts, settings });
 }
