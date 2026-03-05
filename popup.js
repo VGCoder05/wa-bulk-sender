@@ -1,18 +1,15 @@
-// ===== STATE =====
+// ============================================
+// WA BULK SENDER — POPUP (UI Only)
+// All sending logic is in background.js
+// This just displays status and sends commands
+// ============================================
+
 let contacts = [];
 let settings = {
-  minDelay: 25,
-  maxDelay: 60,
-  batchSize: 15,
-  batchPause: 300,
-  dailyLimit: 200,
-  autoRetry: true,
-  keepAlive: true
+  minDelay: 25, maxDelay: 60, batchSize: 15,
+  batchPause: 300, dailyLimit: 200, autoRetry: true, keepAlive: true
 };
-let isSending = false;
-let isPaused = false;
 let logEntries = [];
-let waTabId = null;
 
 // ===== INIT =====
 document.addEventListener("DOMContentLoaded", () => {
@@ -22,7 +19,97 @@ document.addEventListener("DOMContentLoaded", () => {
   initMessage();
   initSend();
   initSettings();
+  syncCampaignState();
 });
+
+// Listen for real-time updates from background
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "LOG") {
+    displayLog(message);
+  }
+  if (message.type === "CONTACT_DONE" || message.type === "SENDING_TO" ||
+      message.type === "BATCH_BREAK" || message.type === "CAMPAIGN_COMPLETE" ||
+      message.type === "CAMPAIGN_STARTED" || message.type === "CAMPAIGN_PAUSED" ||
+      message.type === "CAMPAIGN_RESUMED" || message.type === "CAMPAIGN_STOPPED") {
+    syncCampaignState();
+  }
+});
+
+// ===== SYNC STATE FROM BACKGROUND =====
+async function syncCampaignState() {
+  try {
+    const campaign = await chrome.runtime.sendMessage({ type: "GET_CAMPAIGN_STATE" });
+    if (!campaign) return;
+
+    // Update counters
+    document.getElementById("sentCount").textContent = campaign.sent || 0;
+    document.getElementById("failedCount").textContent = campaign.failed || 0;
+    document.getElementById("remainingCount").textContent =
+      Math.max(0, (campaign.contacts?.length || 0) - (campaign.currentIndex || 0));
+
+    // Update progress bar
+    const total = campaign.contacts?.length || 0;
+    const done = (campaign.sent || 0) + (campaign.failed || 0);
+    const progress = total > 0 ? (done / total) * 100 : 0;
+    document.getElementById("progressFill").style.width = progress + "%";
+
+    // Update ETA
+    if (campaign.startTime && done > 0) {
+      const elapsed = (Date.now() - campaign.startTime) / 1000;
+      const rate = done / elapsed;
+      const remaining = total - done;
+      const eta = remaining / rate;
+      document.getElementById("etaDisplay").textContent = formatTime(eta);
+      document.getElementById("rateDisplay").textContent = (rate * 60).toFixed(1) + " msg/min";
+    }
+
+    // Update buttons & status
+    if (campaign.isRunning) {
+      document.getElementById("startBtn").disabled = true;
+      document.getElementById("pauseBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = false;
+
+      if (campaign.isPaused) {
+        document.getElementById("pauseBtn").textContent = "▶️ Resume";
+        updateStatus("paused", "⏸️", "Paused");
+      } else {
+        document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+        const idx = campaign.currentIndex || 0;
+        const contact = campaign.contacts?.[idx];
+        const name = contact ? (contact.name || contact.number) : "";
+        updateStatus("sending", "📤", `Sending to ${name} (${idx + 1}/${total})`);
+      }
+    } else {
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("pauseBtn").disabled = true;
+      document.getElementById("stopBtn").disabled = true;
+      document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+
+      if (done > 0 && done >= total) {
+        updateStatus("done", "✅", `Done! Sent: ${campaign.sent}, Failed: ${campaign.failed}`);
+      } else if (done > 0) {
+        updateStatus("error", "⏹️", `Stopped. Sent: ${campaign.sent}, Failed: ${campaign.failed}`);
+      } else {
+        updateStatus("ready", "⏳", "Ready to send");
+      }
+    }
+
+    // Replay logs
+    if (campaign.logs && campaign.logs.length > 0) {
+      const logDiv = document.getElementById("activityLog");
+      // Only add new logs
+      const currentCount = logDiv.children.length;
+      const newLogs = campaign.logs.slice(currentCount);
+      newLogs.forEach(entry => displayLog(entry));
+    }
+
+  } catch (e) {
+    // Background not ready yet
+  }
+}
+
+// Refresh state every 3 seconds when popup is open
+setInterval(syncCampaignState, 3000);
 
 // ===== TABS =====
 function initTabs() {
@@ -59,12 +146,10 @@ function initContacts() {
 function handleFileUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
-
   const reader = new FileReader();
   reader.onload = (event) => {
-    const text = event.target.result;
-    parseAndAddContacts(text);
-    addLog("Imported file: " + file.name, "info");
+    parseAndAddContacts(event.target.result);
+    addLocalLog("Imported file: " + file.name, "info");
   };
   reader.readAsText(file);
   e.target.value = "";
@@ -75,6 +160,7 @@ function parseAndAddContacts(text) {
   let added = 0;
 
   lines.forEach(line => {
+    // Skip header lines
     if (line.toLowerCase().includes("name") && line.toLowerCase().includes("phone")) return;
     if (line.toLowerCase().includes("number") && line.toLowerCase().includes("name")) return;
 
@@ -84,29 +170,40 @@ function parseAndAddContacts(text) {
     const parts = line.split(/[,;\t]+/).map(p => p.trim());
 
     if (parts.length >= 2) {
-      if (/[\d+]/.test(parts[0]) && parts[0].replace(/\D/g, "").length >= 7) {
+      // Figure out which part is the number
+      const p0digits = parts[0].replace(/\D/g, "").length;
+      const p1digits = parts[1].replace(/\D/g, "").length;
+
+      if (p0digits >= 7 && p0digits > p1digits) {
+        // First part is likely the number
         number = parts[0];
         name = parts.slice(1).join(" ");
-      } else if (/[\d+]/.test(parts[1]) && parts[1].replace(/\D/g, "").length >= 7) {
+      } else if (p1digits >= 7) {
+        // Second part is the number
         name = parts[0];
         number = parts[1];
       } else {
+        // Default: treat first as number
         number = parts[0];
-        name = parts[1];
+        name = parts.slice(1).join(" ");
       }
     } else {
+      // ===== SINGLE VALUE = JUST A NUMBER (no name required) =====
       number = parts[0];
+      name = ""; // Empty name — no longer forced to "Unknown"
     }
 
+    // Clean number
     number = number.replace(/[\s\-\(\)\.]/g, "");
     if (!number.startsWith("+")) {
       number = number.replace(/^0+/, "");
     }
     number = number.replace(/^\+/, "");
 
+    // Validate: must have at least 7 digits
     if (number.replace(/\D/g, "").length >= 7) {
       if (!contacts.find(c => c.number === number)) {
-        contacts.push({ number, name: name || "Unknown" });
+        contacts.push({ number, name: name.trim() });
         added++;
       }
     }
@@ -114,7 +211,7 @@ function parseAndAddContacts(text) {
 
   updateContactUI();
   saveState();
-  addLog(`Added ${added} new contacts (${contacts.length} total)`, "success");
+  addLocalLog(`Added ${added} new contacts (${contacts.length} total)`, "success");
 }
 
 function updateContactUI() {
@@ -129,8 +226,9 @@ function updateContactUI() {
   const displayCount = Math.min(contacts.length, 50);
   let html = "";
   for (let i = 0; i < displayCount; i++) {
+    const displayName = contacts[i].name || "(no name)";
     html += `<div class="contact-item">
-      <span class="contact-name">${contacts[i].name}</span>
+      <span class="contact-name">${displayName}</span>
       <span class="contact-number">${contacts[i].number}</span>
     </div>`;
   }
@@ -164,7 +262,6 @@ function initMessage() {
   document.getElementById("useVariants").addEventListener("change", (e) => {
     document.getElementById("variantsSection").style.display = e.target.checked ? "block" : "none";
   });
-
   updatePreview();
 }
 
@@ -183,241 +280,60 @@ function initSend() {
   document.getElementById("exportLogBtn").addEventListener("click", exportLog);
 }
 
-// =============================================
-// ====== CORE SENDING LOGIC (FIXED) ==========
-// =============================================
-
-// Navigate WhatsApp tab to a URL and wait for it to fully load
-function navigateTab(tabId, url) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      // Resolve anyway — page might be usable even if event didn't fire perfectly
-      resolve();
-    }, 30000);
-
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId === tabId && changeInfo.status === "complete") {
-        chrome.tabs.onUpdated.removeListener(listener);
-        clearTimeout(timeout);
-        resolve();
-      }
-    }
-
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.update(tabId, { url });
-  });
-}
-
-// Ping content script until it responds (waits for injection after navigation)
-async function waitForContentScript(tabId, maxRetries = 15) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "PING" });
-      if (response && response.pong) {
-        return true;
-      }
-    } catch (e) {
-      // Content script not injected yet — keep waiting
-    }
-    await sleep(2000);
-  }
-  throw new Error("Content script failed to load after navigation");
-}
-
-// Send a message to content script with retry
-async function sendToContentWithRetry(tabId, message, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, message);
-      return response;
-    } catch (e) {
-      if (i === maxRetries - 1) throw e;
-      addLog(`⚠️ Retry ${i + 1}/${maxRetries} — reconnecting...`, "warning");
-      await sleep(3000);
-    }
-  }
-}
-
-// Send one message to one contact
-async function sendToContact(tabId, contact, messageText) {
-  // Step 1: Build the WhatsApp send URL (pre-fills message)
-  const url = `https://web.whatsapp.com/send?phone=${contact.number}&text=${encodeURIComponent(messageText)}`;
-
-  // Step 2: Navigate the tab (from popup — does NOT kill content script context)
-  addLog(`🔗 Opening chat for ${contact.name}...`, "info");
-  await navigateTab(tabId, url);
-
-  // Step 3: Extra wait for WhatsApp Web JS to initialize
-  await sleep(3000);
-
-  // Step 4: Wait for content script to be alive on the new page
-  addLog(`🔌 Waiting for page to be ready...`, "info");
-  await waitForContentScript(tabId);
-
-  // Step 5: Tell content script to click the Send button
-  addLog(`📤 Sending message...`, "info");
-  const response = await sendToContentWithRetry(tabId, { type: "CLICK_SEND" });
-
-  return response;
-}
-
-// Main sending loop
 async function startSending() {
   if (contacts.length === 0) return alert("No contacts loaded! Go to Contacts tab first.");
   const msg = document.getElementById("messageInput").value.trim();
   if (!msg) return alert("No message! Go to Message tab first.");
 
   // Find WhatsApp Web tab
-  const [tab] = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" });
-  if (!tab) return alert("Please open web.whatsapp.com first!");
-  waTabId = tab.id;
-
-  isSending = true;
-  isPaused = false;
-
-  document.getElementById("startBtn").disabled = true;
-  document.getElementById("pauseBtn").disabled = false;
-  document.getElementById("stopBtn").disabled = false;
-  updateStatus("sending", "🚀", "Sending messages...");
+  const [waTab] = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" });
+  if (!waTab) return alert("Please open web.whatsapp.com first!");
 
   const link = document.getElementById("inviteLink").value.trim();
   const useVariants = document.getElementById("useVariants").checked;
   const variants = document.getElementById("variantsInput").value.split("\n").filter(v => v.trim());
 
-  let sent = 0;
-  let failed = 0;
-  let remaining = contacts.length;
-  const startTime = Date.now();
-
-  document.getElementById("remainingCount").textContent = remaining;
-
-  for (let i = 0; i < contacts.length; i++) {
-    if (!isSending) break;
-
-    // Pause handling
-    while (isPaused && isSending) {
-      updateStatus("paused", "⏸️", "Paused...");
-      await sleep(1000);
+  // Send START command to background
+  chrome.runtime.sendMessage({
+    type: "START_CAMPAIGN",
+    data: {
+      contacts: contacts,
+      message: msg,
+      link: link,
+      useVariants: useVariants,
+      variants: variants,
+      settings: settings,
+      waTabId: waTab.id
     }
-    if (!isSending) break;
+  });
 
-    updateStatus("sending", "📤", `Sending to ${contacts[i].name} (${i + 1}/${contacts.length})`);
-
-    // Build message
-    let currentMsg = msg;
-    if (useVariants && variants.length > 0) {
-      currentMsg = variants[Math.floor(Math.random() * variants.length)];
-    }
-    currentMsg = currentMsg
-      .replace(/\{name\}/g, contacts[i].name || "")
-      .replace(/\{link\}/g, link);
-
-    // ===== SEND (FIXED APPROACH) =====
-    try {
-      const response = await sendToContact(waTabId, contacts[i], currentMsg);
-
-      if (response && response.success) {
-        sent++;
-        addLog(`✅ Sent to ${contacts[i].name} (${contacts[i].number})`, "success");
-      } else {
-        failed++;
-        const errMsg = response?.error || "Unknown error";
-        addLog(`❌ Failed: ${contacts[i].name} — ${errMsg}`, "error");
-
-        // Auto-retry once
-        if (settings.autoRetry) {
-          addLog(`🔄 Retrying ${contacts[i].name}...`, "warning");
-          await sleep(5000);
-          try {
-            const retry = await sendToContact(waTabId, contacts[i], currentMsg);
-            if (retry && retry.success) {
-              sent++;
-              failed--; // Undo the failure count
-              addLog(`✅ Retry succeeded for ${contacts[i].name}`, "success");
-            }
-          } catch (retryErr) {
-            addLog(`❌ Retry also failed for ${contacts[i].name}`, "error");
-          }
-        }
-      }
-    } catch (err) {
-      failed++;
-      addLog(`❌ Error: ${contacts[i].name} — ${err.message}`, "error");
-    }
-
-    remaining = contacts.length - i - 1;
-
-    // Update UI
-    document.getElementById("sentCount").textContent = sent;
-    document.getElementById("failedCount").textContent = failed;
-    document.getElementById("remainingCount").textContent = remaining;
-
-    const progress = ((i + 1) / contacts.length) * 100;
-    document.getElementById("progressFill").style.width = progress + "%";
-
-    // ETA
-    const elapsed = (Date.now() - startTime) / 1000;
-    const rate = (i + 1) / elapsed;
-    const eta = remaining / rate;
-    document.getElementById("etaDisplay").textContent = formatTime(eta);
-    document.getElementById("rateDisplay").textContent = (rate * 60).toFixed(1) + " msg/min";
-
-    // Batch pause
-    if ((i + 1) % settings.batchSize === 0 && i < contacts.length - 1) {
-      addLog(`☕ Batch break (${settings.batchPause}s)...`, "warning");
-      updateStatus("paused", "☕", `Batch break... ${settings.batchPause}s`);
-
-      for (let s = settings.batchPause; s > 0 && isSending; s--) {
-        updateStatus("paused", "☕", `Batch break... ${s}s remaining`);
-        await sleep(1000);
-      }
-    }
-
-    // Random delay between messages
-    if (i < contacts.length - 1 && isSending) {
-      const delay = randomDelay(settings.minDelay, settings.maxDelay);
-      addLog(`⏳ Waiting ${delay}s...`, "info");
-
-      for (let s = delay; s > 0 && isSending && !isPaused; s--) {
-        updateStatus("sending", "⏳", `Next message in ${s}s...`);
-        await sleep(1000);
-      }
-    }
-
-    // Daily limit
-    if (sent >= settings.dailyLimit) {
-      addLog(`🛡️ Daily limit (${settings.dailyLimit}) reached! Stopping.`, "warning");
-      break;
-    }
-  }
-
-  // Done
-  isSending = false;
-  document.getElementById("startBtn").disabled = false;
-  document.getElementById("pauseBtn").disabled = true;
-  document.getElementById("stopBtn").disabled = true;
-  updateStatus("done", "✅", `Done! Sent: ${sent}, Failed: ${failed}`);
-  addLog(`🏁 Completed! Sent: ${sent}, Failed: ${failed}`, "success");
-  saveState();
+  // UI update
+  document.getElementById("startBtn").disabled = true;
+  document.getElementById("pauseBtn").disabled = false;
+  document.getElementById("stopBtn").disabled = false;
+  document.getElementById("remainingCount").textContent = contacts.length;
+  updateStatus("sending", "🚀", "Starting campaign...");
 }
 
-function togglePause() {
-  isPaused = !isPaused;
-  document.getElementById("pauseBtn").textContent = isPaused ? "▶️ Resume" : "⏸️ Pause";
-  addLog(isPaused ? "⏸️ Paused by user" : "▶️ Resumed", "warning");
+async function togglePause() {
+  const campaign = await chrome.runtime.sendMessage({ type: "GET_CAMPAIGN_STATE" });
+  if (campaign && campaign.isPaused) {
+    chrome.runtime.sendMessage({ type: "RESUME_CAMPAIGN" });
+    document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+  } else {
+    chrome.runtime.sendMessage({ type: "PAUSE_CAMPAIGN" });
+    document.getElementById("pauseBtn").textContent = "▶️ Resume";
+  }
 }
 
 function stopSending() {
   if (confirm("Stop sending?")) {
-    isSending = false;
-    isPaused = false;
+    chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" });
     document.getElementById("startBtn").disabled = false;
     document.getElementById("pauseBtn").disabled = true;
     document.getElementById("stopBtn").disabled = true;
     document.getElementById("pauseBtn").textContent = "⏸️ Pause";
     updateStatus("error", "⏹️", "Stopped by user");
-    addLog("⏹️ Stopped by user", "error");
   }
 }
 
@@ -428,7 +344,7 @@ function updateStatus(type, icon, text) {
   document.getElementById("statusText").textContent = text;
 }
 
-// ===== SETTINGS TAB =====
+// ===== SETTINGS =====
 function initSettings() {
   document.getElementById("saveSettingsBtn").addEventListener("click", () => {
     settings.minDelay = parseInt(document.getElementById("minDelay").value) || 25;
@@ -438,21 +354,17 @@ function initSettings() {
     settings.dailyLimit = parseInt(document.getElementById("dailyLimit").value) || 200;
     settings.autoRetry = document.getElementById("autoRetry").checked;
     settings.keepAlive = document.getElementById("keepAlive").checked;
-
     if (settings.minDelay < 10) settings.minDelay = 10;
     if (settings.maxDelay < settings.minDelay) settings.maxDelay = settings.minDelay + 10;
-
     saveState();
-    addLog("⚙️ Settings saved!", "info");
     alert("Settings saved!");
   });
 
   document.getElementById("resetSettingsBtn").addEventListener("click", () => {
-    if (confirm("Reset all settings to default?")) {
+    if (confirm("Reset to defaults?")) {
       settings = { minDelay: 25, maxDelay: 60, batchSize: 15, batchPause: 300, dailyLimit: 200, autoRetry: true, keepAlive: true };
       populateSettings();
       saveState();
-      addLog("🔄 Settings reset to default", "info");
     }
   });
 
@@ -470,73 +382,51 @@ function populateSettings() {
 }
 
 // ===== LOG =====
-function addLog(message, type = "info") {
-  const time = new Date().toLocaleTimeString();
-  const entry = { time, message, type };
-  logEntries.push(entry);
-
+function displayLog(entry) {
   const log = document.getElementById("activityLog");
-  if (log) {
-    const div = document.createElement("div");
-    div.className = "log-entry " + type;
-    div.textContent = `[${time}] ${message}`;
-    log.appendChild(div);
-    log.scrollTop = log.scrollHeight;
+  if (!log) return;
+  const div = document.createElement("div");
+  div.className = "log-entry " + (entry.type || "info");
+  div.textContent = `[${entry.time}] ${entry.message}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  while (log.children.length > 200) log.removeChild(log.firstChild);
 
-    // Keep max 200 entries in DOM
-    while (log.children.length > 200) {
-      log.removeChild(log.firstChild);
-    }
-  }
+  logEntries.push(entry);
+}
+
+function addLocalLog(message, type = "info") {
+  displayLog({ time: new Date().toLocaleTimeString(), message, type });
 }
 
 function exportLog() {
-  if (logEntries.length === 0) return alert("No log entries to export!");
-
+  if (logEntries.length === 0) return alert("No logs to export!");
   const text = logEntries.map(e => `[${e.time}] [${e.type.toUpperCase()}] ${e.message}`).join("\n");
   const blob = new Blob([text], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `wa-bulk-sender-log-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.download = `wa-bulk-log-${new Date().toISOString().slice(0, 10)}.txt`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
 // ===== HELPERS =====
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function randomDelay(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
 function formatTime(seconds) {
   if (!seconds || !isFinite(seconds)) return "--";
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  if (mins > 60) {
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h ${mins % 60}m`;
-  }
+  if (mins > 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
   return `${mins}m ${secs}s`;
 }
 
-// ===== STATE =====
 function saveState() {
   chrome.storage.local.set({ contacts, settings });
 }
 
 function loadState() {
   chrome.storage.local.get(["contacts", "settings"], (data) => {
-    if (data.contacts) {
-      contacts = data.contacts;
-      updateContactUI();
-    }
-    if (data.settings) {
-      settings = { ...settings, ...data.settings };
-      populateSettings();
-    }
+    if (data.contacts) { contacts = data.contacts; updateContactUI(); }
+    if (data.settings) { settings = { ...settings, ...data.settings }; populateSettings(); }
   });
 }
