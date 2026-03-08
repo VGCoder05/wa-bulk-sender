@@ -29,7 +29,12 @@
         "https://web.whatsapp.com/*"
       ],
       "js": [
-        "content.js"
+        "content/utils.js",
+        "content/uiHelpers.js",
+        "content/captionHelper.js",
+        "content/textSender.js",
+        "content/imageSender.js",
+        "content/main.js"
       ],
       "css": [
         "content.css"
@@ -38,3 +43,4 @@
     }
   ]
 }
+
