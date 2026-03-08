@@ -245,9 +245,26 @@ Kindly save this number for any future service needs of your IFB appliances: �
 
 📲 +919915967672 — Please save this number for future needs.
 
-For quick updates & service tips, join our WhatsApp community: 🔗 https://chat.whatsapp.com/DGAY7BIdOG1Eyhar7RqzHR
+For quick updates & service, join our WhatsApp community: 🔗 https://chat.whatsapp.com/DGAY7BIdOG1Eyhar7RqzHR
 
-Your satisfaction is our priority!`
+Your satisfaction is our priority!
+
+🙏 नमस्ते Sir,
+
+मैं IFB सर्विस सेंटर, अबोहर से हूं।
+
+कृपया भविष्य में अपन॓ किसी भी IFB उपकरण की सेवा संबंधी आवश्यकता के लिए इस नंबर को *save* कर लें।
+
+IFB उपकरण:
+🔹 Washing Machine
+🔹 Micro Wave Oven
+🔹 Dishwasher
+
+📲 +919915967672 — कृपया भविष्य में उपयोग के लिए इस नंबर को *save* कर लें।
+
+New update और सर्विस के लिए, हमारे *WhatsApp group* से जुड़ें: https://chat.whatsapp.com/DGAY7BIdOG1Eyhar7RqzHR
+
+आपकी संतुष्टि हमारी प्राथमिकता है!`
   };
 
   document.querySelectorAll(".template-btn").forEach(btn => {
@@ -604,4 +621,261 @@ function hideImagePreview() {
   if (img) img.src = "";
   if (container) container.style.display = "none";
   if (sizeLabel) sizeLabel.textContent = "";
+}
+
+// ============================================
+// Add to popup.js — Download functionality
+// ============================================
+
+// ===== UPDATE initSend() — Add download button listeners =====
+function initSend() {
+  document.getElementById("startBtn").addEventListener("click", startSending);
+  document.getElementById("pauseBtn").addEventListener("click", togglePause);
+  document.getElementById("stopBtn").addEventListener("click", stopSending);
+  document.getElementById("exportLogBtn").addEventListener("click", exportLog);
+
+  // ★ NEW: Download buttons
+  document.getElementById("downloadFailedBtn").addEventListener("click", downloadFailed);
+  document.getElementById("downloadSuccessBtn").addEventListener("click", downloadSuccess);
+  document.getElementById("downloadAllBtn").addEventListener("click", downloadAll);
+}
+
+// ===== UPDATE the message listener to show download section =====
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "LOG") {
+    displayLog(message);
+  }
+  
+  // ★ Show download section when campaign ends
+  if (message.type === "CAMPAIGN_COMPLETE" || message.type === "CAMPAIGN_STOPPED") {
+    showDownloadSection(message.failedCount || 0, message.successCount || 0);
+    syncCampaignState();
+  }
+  
+  if (message.type === "CONTACT_DONE" || message.type === "SENDING_TO" ||
+      message.type === "BATCH_BREAK" || message.type === "CAMPAIGN_STARTED" || 
+      message.type === "CAMPAIGN_PAUSED" || message.type === "CAMPAIGN_RESUMED") {
+    syncCampaignState();
+  }
+});
+
+// ===== UPDATE syncCampaignState to check for existing results =====
+async function syncCampaignState() {
+  try {
+    const campaign = await chrome.runtime.sendMessage({ type: "GET_CAMPAIGN_STATE" });
+    if (!campaign) return;
+
+    document.getElementById("sentCount").textContent = campaign.sent || 0;
+    document.getElementById("failedCount").textContent = campaign.failed || 0;
+    document.getElementById("remainingCount").textContent =
+      Math.max(0, (campaign.contacts?.length || 0) - (campaign.currentIndex || 0));
+
+    const total = campaign.contacts?.length || 0;
+    const done = (campaign.sent || 0) + (campaign.failed || 0);
+    const progress = total > 0 ? (done / total) * 100 : 0;
+    document.getElementById("progressFill").style.width = progress + "%";
+
+    if (campaign.startTime && done > 0) {
+      const elapsed = (Date.now() - campaign.startTime) / 1000;
+      const rate = done / elapsed;
+      const remaining = total - done;
+      const eta = remaining / rate;
+      document.getElementById("etaDisplay").textContent = formatTime(eta);
+      document.getElementById("rateDisplay").textContent = (rate * 60).toFixed(1) + " msg/min";
+    }
+
+    // ★ Show download section if there are results and campaign not running
+    if (!campaign.isRunning && (campaign.failedContacts?.length > 0 || campaign.successContacts?.length > 0)) {
+      showDownloadSection(
+        campaign.failedContacts?.length || 0, 
+        campaign.successContacts?.length || 0
+      );
+    }
+
+    if (campaign.isRunning) {
+      document.getElementById("startBtn").disabled = true;
+      document.getElementById("pauseBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = false;
+      
+      // Hide download section while running
+      document.getElementById("downloadSection").style.display = "none";
+
+      if (campaign.isPaused) {
+        document.getElementById("pauseBtn").textContent = "▶️ Resume";
+        updateStatus("paused", "⏸️", "Paused");
+      } else {
+        document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+        const idx = campaign.currentIndex || 0;
+        const contact = campaign.contacts?.[idx];
+        const name = contact ? (contact.name || contact.number) : "";
+        updateStatus("sending", "📤", `Sending to ${name} (${idx + 1}/${total})`);
+      }
+    } else {
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("pauseBtn").disabled = true;
+      document.getElementById("stopBtn").disabled = true;
+      document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+
+      if (done > 0 && done >= total) {
+        updateStatus("done", "✅", `Done! Sent: ${campaign.sent}, Failed: ${campaign.failed}`);
+      } else if (done > 0) {
+        updateStatus("error", "⏹️", `Stopped. Sent: ${campaign.sent}, Failed: ${campaign.failed}`);
+      } else {
+        updateStatus("ready", "⏳", "Ready to send");
+      }
+    }
+
+    if (campaign.logs && campaign.logs.length > 0) {
+      const logDiv = document.getElementById("activityLog");
+      const currentCount = logDiv.children.length;
+      const newLogs = campaign.logs.slice(currentCount);
+      newLogs.forEach(entry => displayLog(entry));
+    }
+
+  } catch (e) {
+    // Background not ready yet
+  }
+}
+
+// ============================================
+// ★ NEW: Download Functions
+// ============================================
+
+function showDownloadSection(failedCount, successCount) {
+  const section = document.getElementById("downloadSection");
+  document.getElementById("downloadFailedCount").textContent = failedCount;
+  document.getElementById("downloadSuccessCount").textContent = successCount;
+  
+  if (failedCount > 0 || successCount > 0) {
+    section.style.display = "block";
+    
+    // Highlight if there are failures
+    if (failedCount > 0) {
+      section.style.background = "#fff3cd";  // Yellow warning
+    } else {
+      section.style.background = "#d4edda";  // Green success
+    }
+  } else {
+    section.style.display = "none";
+  }
+}
+
+async function downloadFailed() {
+  try {
+    const data = await chrome.runtime.sendMessage({ type: "GET_FAILED_CONTACTS" });
+    
+    if (!data.failedContacts || data.failedContacts.length === 0) {
+      alert("No failed contacts to download!");
+      return;
+    }
+
+    // ★ Create CSV content
+    const csvHeader = "Number,Name,Reason,Timestamp\n";
+    const csvRows = data.failedContacts.map(c => {
+      // Escape commas and quotes in fields
+      const name = escapeCSV(c.name || "");
+      const reason = escapeCSV(c.reason || "Unknown");
+      const timestamp = c.timestamp || "";
+      return `${c.number},${name},${reason},${timestamp}`;
+    }).join("\n");
+
+    const csvContent = csvHeader + csvRows;
+    downloadFile(csvContent, `failed-contacts-${getDateString()}.csv`, "text/csv");
+    
+    addLocalLog(`📥 Downloaded ${data.failedContacts.length} failed contacts`, "info");
+    
+  } catch (err) {
+    console.error("Download failed error:", err);
+    alert("Error downloading: " + err.message);
+  }
+}
+
+async function downloadSuccess() {
+  try {
+    const data = await chrome.runtime.sendMessage({ type: "GET_FAILED_CONTACTS" });
+    
+    if (!data.successContacts || data.successContacts.length === 0) {
+      alert("No successful contacts to download!");
+      return;
+    }
+
+    const csvHeader = "Number,Name,Timestamp\n";
+    const csvRows = data.successContacts.map(c => {
+      const name = escapeCSV(c.name || "");
+      const timestamp = c.timestamp || "";
+      return `${c.number},${name},${timestamp}`;
+    }).join("\n");
+
+    const csvContent = csvHeader + csvRows;
+    downloadFile(csvContent, `success-contacts-${getDateString()}.csv`, "text/csv");
+    
+    addLocalLog(`📥 Downloaded ${data.successContacts.length} successful contacts`, "info");
+    
+  } catch (err) {
+    console.error("Download success error:", err);
+    alert("Error downloading: " + err.message);
+  }
+}
+
+async function downloadAll() {
+  try {
+    const data = await chrome.runtime.sendMessage({ type: "GET_FAILED_CONTACTS" });
+    
+    const totalContacts = (data.failedContacts?.length || 0) + (data.successContacts?.length || 0);
+    if (totalContacts === 0) {
+      alert("No contacts to download!");
+      return;
+    }
+
+    // ★ Combine both with Status column
+    const csvHeader = "Number,Name,Status,Reason,Timestamp\n";
+    
+    const successRows = (data.successContacts || []).map(c => {
+      const name = escapeCSV(c.name || "");
+      return `${c.number},${name},SUCCESS,,${c.timestamp || ""}`;
+    });
+    
+    const failedRows = (data.failedContacts || []).map(c => {
+      const name = escapeCSV(c.name || "");
+      const reason = escapeCSV(c.reason || "Unknown");
+      return `${c.number},${name},FAILED,${reason},${c.timestamp || ""}`;
+    });
+
+    const csvContent = csvHeader + [...successRows, ...failedRows].join("\n");
+    downloadFile(csvContent, `all-contacts-${getDateString()}.csv`, "text/csv");
+    
+    addLocalLog(`📥 Downloaded all ${totalContacts} contacts (${data.sent} success, ${data.failed} failed)`, "info");
+    
+  } catch (err) {
+    console.error("Download all error:", err);
+    alert("Error downloading: " + err.message);
+  }
+}
+
+// ===== Helper: Escape CSV fields =====
+function escapeCSV(str) {
+  if (!str) return "";
+  // If contains comma, quote, or newline — wrap in quotes and escape internal quotes
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
+// ===== Helper: Download file =====
+function downloadFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ===== Helper: Get date string for filename =====
+function getDateString() {
+  return new Date().toISOString().slice(0, 10);  // "2024-01-15"
 }

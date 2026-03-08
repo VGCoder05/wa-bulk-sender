@@ -159,6 +159,29 @@ Hi {name}, check out our community: {link}
         </div>
 
         <button class="btn btn-small" id="exportLogBtn">📥 Export Log</button>
+
+        <!-- ★ NEW: Download Results Section ★ -->
+        <div id="downloadSection" style="margin-top: 15px; padding: 12px; 
+        background: #fff3cd; border-radius: 8px; display: none;">
+          <h4 style="margin: 0 0 10px 0; color: #856404;">📊 Campaign Results</h4>
+          <div style="margin-bottom: 10px; font-size: 13px;">
+            <span style="color: #155724;">✅ Success: <strong id="downloadSuccessCount">0</strong></span>
+            &nbsp;&nbsp;
+            <span style="color: #721c24;">❌ Failed: <strong id="downloadFailedCount">0</strong></span>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-danger btn-small" id="downloadFailedBtn">
+              📥 Download Failed
+            </button>
+            <button class="btn btn-success btn-small" id="downloadSuccessBtn">
+              📥 Download Success
+            </button>
+            <button class="btn btn-small" id="downloadAllBtn">
+              📥 Download All
+            </button>
+          </div>
+        </div>
+        <!-- ★ END Download Section ★ -->
       </div>
     </div>
 
