@@ -6,8 +6,10 @@
 }
 
 body {
+  position: relative;
   width: 400px;
-  min-height: 500px;
+  overflow: hidden;
+  
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   background: #111b21;
   color: #e9edef;
@@ -15,9 +17,10 @@ body {
 }
 
 .app {
+  min-height: 80%;
+
   display: flex;
   flex-direction: column;
-  min-height: 100%;
 }
 
 /* ===== HEADER ===== */
@@ -72,8 +75,7 @@ body {
 /* ===== TAB CONTENT ===== */
 .tab-content {
   display: none;
-  padding: 12px;
-  max-height: 450px;
+  padding: 10px;
   overflow-y: auto;
 }
 
@@ -94,7 +96,9 @@ body {
 }
 
 /* ===== FORM ELEMENTS ===== */
-textarea, input[type="text"], input[type="number"] {
+textarea,
+input[type="text"],
+input[type="number"] {
   width: 100%;
   padding: 10px;
   background: #2a3942;
@@ -107,7 +111,8 @@ textarea, input[type="text"], input[type="number"] {
   transition: border-color 0.3s;
 }
 
-textarea:focus, input:focus {
+textarea:focus,
+input:focus {
   border-color: #25d366;
 }
 
@@ -291,7 +296,8 @@ textarea {
   transition: all 0.3s;
 }
 
-.template-btn:hover, .template-btn.active {
+.template-btn:hover,
+.template-btn.active {
   border-color: #25d366;
   background: #1a2a32;
   color: #25d366;

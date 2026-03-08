@@ -167,24 +167,14 @@ async function handleClickSend() {
 
 // ============================================
 // ===== 2) IMAGE FLOW: SEND_IMAGE ============
-// ===== v4.0 — Text first, then Image ========
-// ============================================
-//
-// NEW BEHAVIOR:
-//   If captionText is provided:
-//     1. Type text in main compose box → Send as regular message
-//     2. Wait for message to deliver
-//     3. Then paste/attach image → Send WITHOUT caption
-//
-//   If no captionText:
-//     1. Just paste/attach image → Send
+// ===== v3.1 — Fixed Focus Issue =============
 // ============================================
 
 async function handleSendImage(captionText) {
   try {
-    console.log("🖼️ WA Bulk Sender: Starting image send flow (v4.0 — text first, then image)...");
+    console.log("🖼️ Starting image send (v3.1)...");
 
-    // ===== Step 1: Wait for chat to load =====
+    // Step 1: Wait for chat
     const composeBox = await waitForElement(
       'div[contenteditable="true"][data-tab="10"][role="textbox"]',
       25000
@@ -193,307 +183,262 @@ async function handleSendImage(captionText) {
     if (!composeBox) {
       const popupError = checkForErrorPopup();
       if (popupError) return popupError;
-      return { success: false, error: "Chat did not load — compose box not found" };
+      return { success: false, error: "Chat did not load" };
     }
 
-    console.log("✅ Chat loaded for image send.");
+    console.log("✅ Chat loaded.");
 
     const popupError = checkForErrorPopup();
     if (popupError) return popupError;
 
     await humanDelay(1000, 2000);
-    await simulateHumanBehavior();
 
-    // ==========================================================
-    // ===== Step 2: SEND TEXT MESSAGE FIRST (if provided) ======
-    // ==========================================================
-    if (captionText && captionText.trim()) {
-      console.log("📝 Sending text message FIRST...");
-
-      // Focus the main compose box
-      composeBox.focus();
-      await humanDelay(300, 500);
-      simulateRealisticClick(composeBox);
-      await humanDelay(300, 500);
-      composeBox.focus();
-      await humanDelay(200, 400);
-
-      // Type the message line by line (Shift+Enter for newlines)
-      const lines = captionText.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (i > 0) {
-          // Shift+Enter for new line in WhatsApp
-          composeBox.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-            shiftKey: true, bubbles: true, cancelable: true
-          }));
-          await humanDelay(50, 100);
-          composeBox.dispatchEvent(new KeyboardEvent('keyup', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-            shiftKey: true, bubbles: true, cancelable: true
-          }));
-          await humanDelay(50, 100);
-        }
-        if (lines[i].length > 0) {
-          document.execCommand('insertText', false, lines[i]);
-        }
-        await humanDelay(30, 60);
-      }
-
-      await humanDelay(800, 1200);
-
-      // Verify text was typed
-      const typedText = composeBox.textContent.trim();
-      if (typedText.length === 0) {
-        console.log("⚠️ Text not typed via execCommand, trying InputEvent...");
-        composeBox.focus();
-        await humanDelay(200, 300);
-
-        for (let i = 0; i < lines.length; i++) {
-          if (i > 0) {
-            composeBox.dispatchEvent(new InputEvent('beforeinput', {
-              inputType: 'insertLineBreak', bubbles: true, cancelable: true, composed: true
-            }));
-            composeBox.dispatchEvent(new InputEvent('input', {
-              inputType: 'insertLineBreak', bubbles: true, cancelable: false, composed: true
-            }));
-            await humanDelay(50, 100);
-          }
-          if (lines[i].length > 0) {
-            composeBox.dispatchEvent(new InputEvent('beforeinput', {
-              inputType: 'insertText', data: lines[i],
-              bubbles: true, cancelable: true, composed: true
-            }));
-            composeBox.dispatchEvent(new InputEvent('input', {
-              inputType: 'insertText', data: lines[i],
-              bubbles: true, cancelable: false, composed: true
-            }));
-          }
-          await humanDelay(30, 60);
-        }
-        await humanDelay(500, 800);
-      }
-
-      // Now click the Send button for the text message
-      console.log("📤 Clicking send for text message...");
-      await humanDelay(500, 1000);
-
-      let sendButton = findSendButton();
-
-      if (sendButton) {
-        console.log("✅ Send button found for text message!");
-        await humanDelay(300, 700);
-
-        simulateRealisticClick(sendButton);
-        await humanDelay(300, 600);
-        try { sendButton.click(); } catch (e) {}
-        await humanDelay(200, 400);
-
-        sendButton.focus();
-        sendButton.dispatchEvent(new MouseEvent("click", {
-          bubbles: true, cancelable: true, view: window
-        }));
-      } else {
-        console.log("⚠️ Send button not found, trying Enter key...");
-        composeBox.focus();
-        await humanDelay(300, 500);
-
-        composeBox.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "Enter", code: "Enter", keyCode: 13, which: 13,
-          bubbles: true, cancelable: true
-        }));
-        await humanDelay(50, 100);
-        composeBox.dispatchEvent(new KeyboardEvent("keyup", {
-          key: "Enter", code: "Enter", keyCode: 13, which: 13,
-          bubbles: true, cancelable: true
-        }));
-      }
-
-      console.log("✅ Text message sent! Waiting before sending image...");
-      await humanDelay(2000, 4000); // Wait for message to go through
-    }
-
-    // ==========================================================
-    // ===== Step 3: Read image from chrome.storage.local =======
-    // ==========================================================
+    // Step 2: Read image from storage
     console.log("📦 Reading image from storage...");
-
-    const imageData = await new Promise((resolve) => {
-      chrome.storage.local.get(["campaignImage", "campaignImageMime"], (data) => {
-        resolve(data);
-      });
+    const imageData = await new Promise(resolve => {
+      chrome.storage.local.get(["campaignImage", "campaignImageMime"], resolve);
     });
 
     if (!imageData.campaignImage) {
-      return { success: false, error: "No image found in storage (campaignImage missing)" };
+      return { success: false, error: "No image in storage" };
     }
 
     const mimeType = imageData.campaignImageMime || "image/jpeg";
-    console.log(`✅ Image loaded from storage (MIME: ${mimeType})`);
+    console.log(`✅ Image loaded (${mimeType})`);
 
-    // ===== Step 4: Convert base64 → Blob =====
+    // Step 3: Convert to blob
     const blob = await (await fetch(imageData.campaignImage)).blob();
-    console.log(`✅ Blob created: ${(blob.size / 1024).toFixed(1)} KB`);
+    console.log(`✅ Blob: ${(blob.size / 1024).toFixed(1)} KB`);
 
-    // ===== Step 5: Write image to REAL system clipboard =====
-    console.log("📋 Writing image to real system clipboard...");
-
-    try {
-      let clipboardBlob = blob;
-
-      if (mimeType !== "image/png") {
-        console.log("  Converting to PNG for clipboard compatibility...");
-        clipboardBlob = await convertToPng(blob);
-        console.log(`  ✅ Converted to PNG: ${(clipboardBlob.size / 1024).toFixed(1)} KB`);
-      }
-
-      const clipboardItem = new ClipboardItem({
-        "image/png": clipboardBlob
-      });
-
-      await navigator.clipboard.write([clipboardItem]);
-      console.log("✅ Image written to system clipboard!");
-
-    } catch (clipErr) {
-      console.error("❌ Clipboard write failed:", clipErr.message);
-      // Fallback: use attach button method (NO caption since we already sent text)
-      return await handleSendImageViaAttach("", blob, mimeType);
+    // Step 4: Convert to PNG for clipboard compatibility
+    console.log("🔄 Converting to PNG...");
+    let clipboardBlob = blob;
+    if (mimeType !== "image/png") {
+      clipboardBlob = await convertToPng(blob);
+      console.log(`✅ PNG: ${(clipboardBlob.size / 1024).toFixed(1)} KB`);
     }
 
-    // ===== Step 6: Focus compose box and paste =====
-    console.log("📋 Pasting image into chat...");
-
-    // Re-acquire compose box (it may have been reset after sending text)
-    const composeBoxForImage = document.querySelector(
-      'div[contenteditable="true"][data-tab="10"][role="textbox"]'
-    ) || composeBox;
-
-    composeBoxForImage.focus();
-    await humanDelay(300, 500);
-    simulateRealisticClick(composeBoxForImage);
-    await humanDelay(300, 500);
-    composeBoxForImage.focus();
+    // ===== CRITICAL: Ensure document focus before clipboard write =====
+    console.log("🎯 Ensuring document focus...");
+    
+    // Click on compose box to get focus
+    composeBox.focus();
+    await humanDelay(100, 200);
+    simulateRealisticClick(composeBox);
     await humanDelay(200, 400);
-
-    // Try paste via document.execCommand
-    let pasted = false;
-
-    console.log("  Trying paste method 1: execCommand('paste')...");
-    try {
-      pasted = document.execCommand('paste');
-      console.log(`  execCommand('paste') returned: ${pasted}`);
-    } catch (e) {
-      console.log(`  execCommand('paste') threw: ${e.message}`);
+    composeBox.focus();
+    await humanDelay(100, 200);
+    
+    // Double-check we have focus
+    if (!document.hasFocus()) {
+      console.log("⚠️ Document not focused, clicking window...");
+      // Try clicking on main area
+      const main = document.querySelector('#main') || document.body;
+      simulateRealisticClick(main);
+      await humanDelay(300, 500);
+      composeBox.focus();
+      await humanDelay(200, 300);
     }
 
-    await humanDelay(500, 800);
+    // Step 5: Write to clipboard with retry logic
+    console.log("📋 Writing to clipboard...");
+    
+    let clipboardWriteSuccess = false;
+    let lastClipboardError = null;
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // Ensure focus before each attempt
+        composeBox.focus();
+        await humanDelay(50, 100);
+        
+        if (!document.hasFocus()) {
+          console.log(`  Attempt ${attempt}: No focus, clicking...`);
+          window.focus();
+          composeBox.click();
+          composeBox.focus();
+          await humanDelay(200, 400);
+        }
+        
+        console.log(`  Attempt ${attempt}: Writing to clipboard...`);
+        
+        await navigator.clipboard.write([
+          new ClipboardItem({ "image/png": clipboardBlob })
+        ]);
+        
+        console.log(`✅ Clipboard write succeeded on attempt ${attempt}!`);
+        clipboardWriteSuccess = true;
+        break;
+        
+      } catch (clipErr) {
+        lastClipboardError = clipErr;
+        console.log(`  Attempt ${attempt} failed: ${clipErr.message}`);
+        
+        if (attempt < 3) {
+          // Wait and regain focus
+          await humanDelay(500, 800);
+          window.focus();
+          simulateRealisticClick(composeBox);
+          composeBox.focus();
+          await humanDelay(300, 500);
+        }
+      }
+    }
+    
+    if (!clipboardWriteSuccess) {
+      console.error("❌ All clipboard write attempts failed:", lastClipboardError?.message);
+      return { success: false, error: "Clipboard write failed: " + (lastClipboardError?.message || "Unknown error") };
+    }
 
-    if (await checkModalAppeared(3000)) {
-      console.log("✅ Paste method 1 worked — modal appeared!");
-    } else {
-      console.log("  Trying paste method 2: Ctrl+V simulation...");
+    // Step 6: Paste into compose box
+    console.log("📋 Pasting into chat...");
+    
+    composeBox.focus();
+    await humanDelay(200, 400);
+    simulateRealisticClick(composeBox);
+    await humanDelay(200, 400);
+    composeBox.focus();
+    await humanDelay(100, 200);
 
-      composeBoxForImage.focus();
-      await humanDelay(200, 300);
+    let modalAppeared = false;
 
-      composeBoxForImage.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'v', code: 'KeyV', keyCode: 86, which: 86,
-        ctrlKey: true, metaKey: false, bubbles: true, cancelable: true
-      }));
+    // Method 1: execCommand paste
+    console.log("  Paste method 1: execCommand...");
+    try { 
+      const result = document.execCommand('paste');
+      console.log(`  execCommand returned: ${result}`);
+    } catch (e) {
+      console.log(`  execCommand threw: ${e.message}`);
+    }
+    await humanDelay(800, 1200);
+    modalAppeared = await checkModalAppeared(3000);
 
+    // Method 2: Ctrl+V
+    if (!modalAppeared) {
+      console.log("  Paste method 2: Ctrl+V...");
+      composeBox.focus();
       await humanDelay(100, 200);
-
-      composeBoxForImage.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'v', code: 'KeyV', keyCode: 86, which: 86,
-        ctrlKey: false, metaKey: true, bubbles: true, cancelable: true
+      
+      composeBox.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'v', code: 'KeyV', keyCode: 86,
+        ctrlKey: true, bubbles: true, cancelable: true
       }));
+      composeBox.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'v', code: 'KeyV', keyCode: 86,
+        ctrlKey: true, bubbles: true, cancelable: true
+      }));
+      
+      await humanDelay(800, 1200);
+      modalAppeared = await checkModalAppeared(3000);
+    }
 
-      await humanDelay(500, 800);
+    // Method 3: Cmd+V (Mac)
+    if (!modalAppeared) {
+      console.log("  Paste method 3: Cmd+V...");
+      composeBox.focus();
+      await humanDelay(100, 200);
+      
+      composeBox.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'v', code: 'KeyV', keyCode: 86,
+        metaKey: true, bubbles: true, cancelable: true
+      }));
+      composeBox.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'v', code: 'KeyV', keyCode: 86,
+        metaKey: true, bubbles: true, cancelable: true
+      }));
+      
+      await humanDelay(800, 1200);
+      modalAppeared = await checkModalAppeared(3000);
+    }
 
-      if (await checkModalAppeared(3000)) {
-        console.log("✅ Paste method 2 worked — modal appeared!");
-      } else {
-        console.log("  Trying paste method 3: paste event on #main...");
+    // Method 4: Paste event with clipboard data
+    if (!modalAppeared) {
+      console.log("  Paste method 4: ClipboardEvent...");
+      try {
+        const clipItems = await navigator.clipboard.read();
+        if (clipItems.length > 0 && clipItems[0].types.includes('image/png')) {
+          const imgBlob = await clipItems[0].getType('image/png');
+          const file = new File([imgBlob], 'image.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
 
-        const mainArea = document.querySelector('#main') || composeBoxForImage;
+          composeBox.focus();
+          await humanDelay(100, 200);
 
-        try {
-          const clipItems = await navigator.clipboard.read();
-          if (clipItems.length > 0) {
-            const item = clipItems[0];
-            const types = item.types;
-            console.log(`  Clipboard contains types: ${types.join(', ')}`);
+          const pasteEvt = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt
+          });
 
-            if (types.includes('image/png')) {
-              const imgBlob = await item.getType('image/png');
-              const file = new File([imgBlob], 'image.png', { type: 'image/png' });
-              const dt = new DataTransfer();
-              dt.items.add(file);
-
-              const pasteEvt = new ClipboardEvent('paste', {
-                bubbles: true, cancelable: true, clipboardData: dt
+          // Try on compose box
+          composeBox.dispatchEvent(pasteEvt);
+          await humanDelay(500, 800);
+          
+          if (!await checkModalAppeared(1500)) {
+            // Try on #main
+            const main = document.querySelector('#main');
+            if (main) {
+              const pasteEvt2 = new ClipboardEvent('paste', {
+                bubbles: true,
+                cancelable: true,
+                clipboardData: dt
               });
-
-              Object.defineProperty(pasteEvt, 'clipboardData', {
-                get: () => dt
-              });
-
-              mainArea.dispatchEvent(pasteEvt);
-              console.log("  Dispatched paste event with overridden clipboardData");
+              main.dispatchEvent(pasteEvt2);
             }
           }
-        } catch (readErr) {
-          console.log(`  Clipboard read failed: ${readErr.message}`);
+          
+          await humanDelay(500, 800);
+          modalAppeared = await checkModalAppeared(2000);
         }
-
-        await humanDelay(500, 800);
-
-        if (await checkModalAppeared(3000)) {
-          console.log("✅ Paste method 3 worked — modal appeared!");
-        } else {
-          console.log("  ⚠️ All paste methods failed, falling back to attach button...");
-          // NO caption — we already sent it as text
-          return await handleSendImageViaAttach("", blob, mimeType);
-        }
+      } catch (e) {
+        console.log(`  ClipboardEvent method failed: ${e.message}`);
       }
     }
 
-    // ===== Step 7: Wait for modal to fully render =====
-    console.log("⏳ Waiting for media preview modal to fully render...");
-    await humanDelay(2000, 3000);
-
-    // ==========================================================
-    // ===== Step 8: NO CAPTION — we already sent it as text ====
-    // ==========================================================
-    console.log("ℹ️ Skipping caption — text was already sent as a separate message");
-
-    // ===== Step 9: Click Send button in modal =====
-    console.log("🔍 Looking for modal send button...");
-    await humanDelay(500, 800);
-
-    let modalSendBtn = findModalSendButton();
-
-    if (!modalSendBtn) {
-      await humanDelay(1000, 2000);
-      modalSendBtn = findModalSendButton();
+    if (!modalAppeared) {
+      return { success: false, error: "Image paste failed — modal did not appear" };
     }
 
-    if (modalSendBtn) {
-      console.log("✅ Modal send button found!");
-      await humanDelay(300, 700);
+    console.log("✅ Modal appeared!");
+    await humanDelay(2000, 3000);
 
-      const sent = await clickModalSend(modalSendBtn);
+    // Step 7: Type caption
+    if (captionText && captionText.trim()) {
+      console.log("✏️ Finding caption input...");
+      const captionInput = await findCaptionInput(8000);
 
+      if (captionInput) {
+        const typed = await typeInCaptionInput(captionInput, captionText);
+        console.log(typed ? "✅ Caption typed!" : "⚠️ Caption may not have typed correctly");
+        await humanDelay(800, 1200);
+      } else {
+        console.log("⚠️ Caption input not found");
+      }
+    }
+
+    // Step 8: Click send
+    console.log("🔍 Finding modal send button...");
+    await humanDelay(500, 800);
+
+    let sendBtn = findModalSendButton();
+    if (!sendBtn) {
+      await humanDelay(1000, 2000);
+      sendBtn = findModalSendButton();
+    }
+
+    if (sendBtn) {
+      console.log("✅ Send button found!");
+      const sent = await clickModalSend(sendBtn);
       if (sent) {
-        console.log("✅ Image sent successfully (text was sent separately before)!");
+        console.log("✅ Image sent!");
         await humanDelay(2000, 3000);
         return { success: true };
       }
-
-      return { success: false, error: "Send button click did not close modal" };
-    } else {
-      return { success: false, error: "Send button not found in modal" };
+      return { success: false, error: "Send click failed" };
     }
+
+    return { success: false, error: "Send button not found in modal" };
 
   } catch (err) {
     console.error("❌ handleSendImage error:", err);
