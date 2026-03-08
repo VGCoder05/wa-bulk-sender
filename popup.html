@@ -32,20 +32,23 @@
         <h3>Import Contacts & Image</h3>
 
         <!-- ===== IMAGE ATTACHMENT SECTION ===== -->
-        <div class="image-upload-section" >
+        <div class="image-upload-section">
           <label class="file-upload">
             📎 Attach Image (optional):
             <input type="file" id="imageUpload" accept="image/*" style="font-size: 12px;" hidden />
           </label>
 
           <div id="imagePreviewContainer" style="display:none; margin-top: 10px;
-    padding: 10px; background: #f0f2f5; border-radius: 10px; text-align: center;">
+      padding: 10px; background: #f0f2f5; border-radius: 10px; text-align: center;">
             <img id="imagePreview" style="max-width: 220px; max-height: 160px;
-      border-radius: 8px; border: 1px solid #d1d7db;" />
+        border-radius: 8px; border: 1px solid #d1d7db;" />
+            <br />
+            <!-- ★ THIS WAS MISSING — the size label -->
+            <span id="imageSizeLabel" style="font-size: 11px; color: #667781;"></span>
             <br />
             <button id="removeImageBtn" style="margin-top: 8px; padding: 4px 14px;
-      background: #ea0038; color: white; border: none; border-radius: 6px;
-      cursor: pointer; font-size: 12px;">
+        background: #ea0038; color: white; border: none; border-radius: 6px;
+        cursor: pointer; font-size: 12px;">
               ❌ Remove Image
             </button>
           </div>

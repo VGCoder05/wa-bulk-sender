@@ -4,6 +4,10 @@
 // This just displays status and sends commands
 // ============================================
 
+// ============================================
+// WA BULK SENDER — POPUP (UI Only) — FIXED
+// ============================================
+
 let contacts = [];
 let settings = {
   minDelay: 25, maxDelay: 60, batchSize: 15,
@@ -11,10 +15,8 @@ let settings = {
 };
 let logEntries = [];
 
-// ===== IMAGE GLOBALS =====
-let imageBase64 = null;
-let imageMimeType = null;
-let imageFileName = null;
+// ===== IMAGE STATE (in-memory, restored from storage on open) =====
+let imageLoaded = false;   // Flag: has initImage() finished restoring?
 
 // ===== INIT =====
 document.addEventListener("DOMContentLoaded", () => {
@@ -22,7 +24,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initContacts();
   initMessage();
-  initImage();
+  initImage();     // ← Restores image from storage (async)
   initSend();
   initSettings();
   syncCampaignState();
@@ -274,8 +276,23 @@ function updatePreview() {
 }
 
 // =============================================
-// ===== IMAGE UPLOAD & HANDLING (NEW) ========
+// ===== IMAGE UPLOAD & HANDLING (FIXED) =======
 // =============================================
+//
+// FIX: Use ONE set of storage keys everywhere:
+//   campaignImage     — base64 data URL
+//   campaignImageMime — MIME type
+//   campaignImageName — original filename
+//   campaignImageSize — file size in bytes
+//
+// These are read by:
+//   - popup.js (to show preview)
+//   - content script (to send the image)
+//   - background.js (to check if image exists)
+//
+// NEVER deleted except by user clicking "Remove"
+// =============================================
+
 function initImage() {
   const imageUpload = document.getElementById("imageUpload");
   const imagePreview = document.getElementById("imagePreview");
@@ -283,91 +300,120 @@ function initImage() {
   const removeImageBtn = document.getElementById("removeImageBtn");
   const imageSizeLabel = document.getElementById("imageSizeLabel");
 
-  imageUpload.addEventListener("change", (e) => {
+  // ── Upload handler ──
+  imageUpload.addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // --- Validate type ---
     if (!file.type.startsWith("image/")) {
       alert("❌ Please select a valid image file (JPG, PNG, WEBP, GIF).");
       e.target.value = "";
       return;
     }
 
-    // --- Validate size (WhatsApp max ~16MB) ---
-    if (file.size > 16 * 1024 * 1024) {
-      alert("❌ Image too large! WhatsApp allows up to 16MB.");
+    if (file.size > 15 * 1024 * 1024) {
+      alert("❌ Image must be under 5MB (storage limit).");
       e.target.value = "";
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      imageBase64 = event.target.result;   // Full data URL
-      imageMimeType = file.type;
-      imageFileName = file.name;
+    try {
+      const base64DataUrl = await fileToBase64(file);
 
-      // Show preview
-      imagePreview.src = imageBase64;
-      imagePreviewContainer.style.display = "block";
+      // ★ Save with UNIFIED keys — same keys content script reads
+      await chrome.storage.local.set({
+        campaignImage:     base64DataUrl,
+        campaignImageMime: file.type,
+        campaignImageName: file.name,
+        campaignImageSize: file.size,
+      });
 
-      // Show file size
-      const sizeKB = (file.size / 1024).toFixed(1);
-      const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      imageSizeLabel.textContent = file.size > 1024 * 1024
-        ? `${sizeMB} MB`
-        : `${sizeKB} KB`;
+      showImagePreview(base64DataUrl, file.name, file.size);
+      imageLoaded = true;
 
-      addLocalLog(`📎 Image attached: ${file.name} (${imageSizeLabel.textContent})`, "info");
+      addLocalLog(`📎 Image saved: ${file.name} (${formatSize(file.size)})`, "info");
+      console.log(`✅ Image saved to storage: ${file.name}`);
 
-      // Save to unlimitedStorage
-      saveState();
-    };
-
-    reader.onerror = () => {
-      alert("❌ Failed to read the image file. Please try again.");
-      e.target.value = "";
-    };
-
-    reader.readAsDataURL(file);
-  });
-
-  removeImageBtn.addEventListener("click", () => {
-    clearImage();
-    addLocalLog("🗑️ Image removed", "info");
-  });
-
-  // --- Restore saved image on popup open ---
-  chrome.storage.local.get(["imageBase64", "imageMimeType", "imageFileName"], (data) => {
-    if (data.imageBase64) {
-      imageBase64 = data.imageBase64;
-      imageMimeType = data.imageMimeType;
-      imageFileName = data.imageFileName || "image";
-
-      imagePreview.src = imageBase64;
-      imagePreviewContainer.style.display = "block";
-
-      // Estimate size from base64 length
-      const estimatedBytes = Math.round((data.imageBase64.length * 3) / 4);
-      const sizeKB = (estimatedBytes / 1024).toFixed(1);
-      imageSizeLabel.textContent = estimatedBytes > 1024 * 1024
-        ? `${(estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
-        : `${sizeKB} KB`;
+    } catch (err) {
+      console.error("❌ Image save error:", err);
+      alert("❌ Failed to save image: " + err.message);
     }
+  });
+
+  // ── Remove handler ──
+  removeImageBtn.addEventListener("click", async () => {
+    await chrome.storage.local.remove([
+      "campaignImage",
+      "campaignImageMime",
+      "campaignImageName",
+      "campaignImageSize",
+    ]);
+
+    hideImagePreview();
+    imageLoaded = false;
+    imageUpload.value = "";
+
+    addLocalLog("🗑️ Image removed", "info");
+    console.log("🗑️ Image removed from storage");
+  });
+
+  // ── Restore on popup open ──
+  restoreImageFromStorage();
+}
+
+async function restoreImageFromStorage() {
+  try {
+    const data = await chrome.storage.local.get([
+      "campaignImage",
+      "campaignImageMime",
+      "campaignImageName",
+      "campaignImageSize",
+    ]);
+
+    if (data.campaignImage) {
+      showImagePreview(
+        data.campaignImage,
+        data.campaignImageName || "image",
+        data.campaignImageSize || 0
+      );
+      imageLoaded = true;
+      console.log("✅ Image restored from storage");
+    } else {
+      hideImagePreview();
+      imageLoaded = false;
+      console.log("ℹ️ No saved image in storage");
+    }
+  } catch (err) {
+    console.error("Error restoring image:", err);
+    imageLoaded = false;
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("FileReader failed"));
+    reader.readAsDataURL(file);
   });
 }
 
-function clearImage() {
-  imageBase64 = null;
-  imageMimeType = null;
-  imageFileName = null;
+function showImagePreview(dataUrl, name, size) {
+  document.getElementById("imagePreview").src = dataUrl;
+  document.getElementById("imagePreviewContainer").style.display = "block";
+  document.getElementById("imageSizeLabel").textContent = formatSize(size);
+}
 
-  document.getElementById("imageUpload").value = "";
+function hideImagePreview() {
+  document.getElementById("imagePreview").src = "";
   document.getElementById("imagePreviewContainer").style.display = "none";
   document.getElementById("imageSizeLabel").textContent = "";
+}
 
-  // Remove from storage too
-  chrome.storage.local.remove(["imageBase64", "imageMimeType", "imageFileName"]);
+function formatSize(bytes) {
+  if (!bytes) return "";
+  if (bytes > 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+  return (bytes / 1024).toFixed(1) + " KB";
 }
 
 // ===== SEND TAB =====
@@ -379,13 +425,16 @@ function initSend() {
 }
 
 async function startSending() {
-  // --- Validation ---
   if (contacts.length === 0) return alert("❌ No contacts loaded! Go to Contacts tab first.");
 
   const msg = document.getElementById("messageInput").value.trim();
-  if (!msg && !imageBase64) return alert("❌ No message or image! Go to Message tab first.");
 
-  // --- Find WhatsApp Web tab ---
+  // ★ Check image from STORAGE, not from JS variable
+  const imgCheck = await chrome.storage.local.get(["campaignImage"]);
+  const hasImage = !!imgCheck.campaignImage;
+
+  if (!msg && !hasImage) return alert("❌ No message or image! Go to Message tab first.");
+
   const [waTab] = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" });
   if (!waTab) return alert("❌ Please open web.whatsapp.com first!");
 
@@ -393,7 +442,8 @@ async function startSending() {
   const useVariants = document.getElementById("useVariants").checked;
   const variants = document.getElementById("variantsInput").value.split("\n").filter(v => v.trim());
 
-  // --- Build campaign data ---
+  // ★ NO need to copy image to different keys!
+  // Content script already reads from "campaignImage" which is already saved
   const campaignData = {
     contacts: contacts,
     message: msg,
@@ -402,27 +452,15 @@ async function startSending() {
     variants: variants,
     settings: settings,
     waTabId: waTab.id,
-    hasImage: !!imageBase64   // Flag — actual image is read from storage
+    hasImage: hasImage,     // ★ Checked from storage, not JS variable
+    hasText: !!msg,         // ★ NEW: flag for text
   };
 
-  // --- If image exists, save it to storage first so background can access it ---
-  if (imageBase64) {
-    await chrome.storage.local.set({
-      campaignImage: imageBase64,
-      campaignImageMime: imageMimeType
-    });
-    addLocalLog(`📎 Image saved for campaign: ${imageFileName}`, "info");
-  } else {
-    await chrome.storage.local.remove(["campaignImage", "campaignImageMime"]);
-  }
-
-  // --- Send START command to background ---
   chrome.runtime.sendMessage({
     type: "START_CAMPAIGN",
     data: campaignData
   });
 
-  // --- UI Update ---
   document.getElementById("startBtn").disabled = true;
   document.getElementById("pauseBtn").disabled = false;
   document.getElementById("stopBtn").disabled = false;
@@ -534,18 +572,11 @@ function formatTime(seconds) {
   return `${mins}m ${secs}s`;
 }
 
+// ★ FIXED: saveState ONLY saves contacts + settings
+// Image is saved SEPARATELY in initImage upload handler
+// This prevents race conditions and accidental overwrites
 function saveState() {
-  // Save contacts, settings, and image data — all to unlimitedStorage
-  const data = { contacts, settings };
-
-  // Only save image data if it exists
-  if (imageBase64) {
-    data.imageBase64 = imageBase64;
-    data.imageMimeType = imageMimeType;
-    data.imageFileName = imageFileName;
-  }
-
-  chrome.storage.local.set(data);
+  chrome.storage.local.set({ contacts, settings });
 }
 
 function loadState() {
@@ -553,5 +584,24 @@ function loadState() {
     if (data.contacts) { contacts = data.contacts; updateContactUI(); }
     if (data.settings) { settings = { ...settings, ...data.settings }; populateSettings(); }
   });
-  // Image is loaded separately in initImage()
+}
+
+function showImagePreview(dataUrl, name, size) {
+  const img = document.getElementById("imagePreview");
+  const container = document.getElementById("imagePreviewContainer");
+  const sizeLabel = document.getElementById("imageSizeLabel");
+
+  if (img) img.src = dataUrl;
+  if (container) container.style.display = "block";
+  if (sizeLabel) sizeLabel.textContent = formatSize(size);
+}
+
+function hideImagePreview() {
+  const img = document.getElementById("imagePreview");
+  const container = document.getElementById("imagePreviewContainer");
+  const sizeLabel = document.getElementById("imageSizeLabel");
+
+  if (img) img.src = "";
+  if (container) container.style.display = "none";
+  if (sizeLabel) sizeLabel.textContent = "";
 }
