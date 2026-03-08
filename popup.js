@@ -11,12 +11,18 @@ let settings = {
 };
 let logEntries = [];
 
+// ===== IMAGE GLOBALS =====
+let imageBase64 = null;
+let imageMimeType = null;
+let imageFileName = null;
+
 // ===== INIT =====
 document.addEventListener("DOMContentLoaded", () => {
   loadState();
   initTabs();
   initContacts();
   initMessage();
+  initImage();
   initSend();
   initSettings();
   syncCampaignState();
@@ -41,19 +47,16 @@ async function syncCampaignState() {
     const campaign = await chrome.runtime.sendMessage({ type: "GET_CAMPAIGN_STATE" });
     if (!campaign) return;
 
-    // Update counters
     document.getElementById("sentCount").textContent = campaign.sent || 0;
     document.getElementById("failedCount").textContent = campaign.failed || 0;
     document.getElementById("remainingCount").textContent =
       Math.max(0, (campaign.contacts?.length || 0) - (campaign.currentIndex || 0));
 
-    // Update progress bar
     const total = campaign.contacts?.length || 0;
     const done = (campaign.sent || 0) + (campaign.failed || 0);
     const progress = total > 0 ? (done / total) * 100 : 0;
     document.getElementById("progressFill").style.width = progress + "%";
 
-    // Update ETA
     if (campaign.startTime && done > 0) {
       const elapsed = (Date.now() - campaign.startTime) / 1000;
       const rate = done / elapsed;
@@ -63,7 +66,6 @@ async function syncCampaignState() {
       document.getElementById("rateDisplay").textContent = (rate * 60).toFixed(1) + " msg/min";
     }
 
-    // Update buttons & status
     if (campaign.isRunning) {
       document.getElementById("startBtn").disabled = true;
       document.getElementById("pauseBtn").disabled = false;
@@ -94,10 +96,8 @@ async function syncCampaignState() {
       }
     }
 
-    // Replay logs
     if (campaign.logs && campaign.logs.length > 0) {
       const logDiv = document.getElementById("activityLog");
-      // Only add new logs
       const currentCount = logDiv.children.length;
       const newLogs = campaign.logs.slice(currentCount);
       newLogs.forEach(entry => displayLog(entry));
@@ -108,7 +108,6 @@ async function syncCampaignState() {
   }
 }
 
-// Refresh state every 3 seconds when popup is open
 setInterval(syncCampaignState, 3000);
 
 // ===== TABS =====
@@ -160,7 +159,6 @@ function parseAndAddContacts(text) {
   let added = 0;
 
   lines.forEach(line => {
-    // Skip header lines
     if (line.toLowerCase().includes("name") && line.toLowerCase().includes("phone")) return;
     if (line.toLowerCase().includes("number") && line.toLowerCase().includes("name")) return;
 
@@ -170,37 +168,30 @@ function parseAndAddContacts(text) {
     const parts = line.split(/[,;\t]+/).map(p => p.trim());
 
     if (parts.length >= 2) {
-      // Figure out which part is the number
       const p0digits = parts[0].replace(/\D/g, "").length;
       const p1digits = parts[1].replace(/\D/g, "").length;
 
       if (p0digits >= 7 && p0digits > p1digits) {
-        // First part is likely the number
         number = parts[0];
         name = parts.slice(1).join(" ");
       } else if (p1digits >= 7) {
-        // Second part is the number
         name = parts[0];
         number = parts[1];
       } else {
-        // Default: treat first as number
         number = parts[0];
         name = parts.slice(1).join(" ");
       }
     } else {
-      // ===== SINGLE VALUE = JUST A NUMBER (no name required) =====
       number = parts[0];
-      name = ""; // Empty name — no longer forced to "Unknown"
+      name = "";
     }
 
-    // Clean number
     number = number.replace(/[\s\-\(\)\.]/g, "");
     if (!number.startsWith("+")) {
       number = number.replace(/^0+/, "");
     }
     number = number.replace(/^\+/, "");
 
-    // Validate: must have at least 7 digits
     if (number.replace(/\D/g, "").length >= 7) {
       if (!contacts.find(c => c.number === number)) {
         contacts.push({ number, name: name.trim() });
@@ -244,7 +235,17 @@ function initMessage() {
     community: `Hey {name}! 👋\n\nI've created an amazing community and I'd love for you to join! 🎉\n\n👉 Join here: {link}\n\nLooking forward to seeing you there! 🙌`,
     group: `Hi {name}! 😊\n\nYou're invited to join our WhatsApp group!\n\n🔗 Join: {link}\n\nSee you inside! 🚀`,
     announce: `Hello {name},\n\nWe have an exciting update to share with you! 📢\n\nCheck it out here: {link}\n\nStay tuned for more! ⭐`,
-    custom: ""
+    custom: `🙏 Namaste Sir,
+
+I'm from IFB Service Center, Abohar.
+
+Kindly save this number for any future service needs of your IFB appliances: 🔹 Washing Machine 🔹 Microwave Oven 🔹 Dishwasher
+
+📲 +919915967672 — Please save this number for future needs.
+
+For quick updates & service tips, join our WhatsApp community: 🔗 https://chat.whatsapp.com/DGAY7BIdOG1Eyhar7RqzHR
+
+Your satisfaction is our priority!`
   };
 
   document.querySelectorAll(".template-btn").forEach(btn => {
@@ -272,6 +273,103 @@ function updatePreview() {
   document.getElementById("messagePreview").textContent = msg;
 }
 
+// =============================================
+// ===== IMAGE UPLOAD & HANDLING (NEW) ========
+// =============================================
+function initImage() {
+  const imageUpload = document.getElementById("imageUpload");
+  const imagePreview = document.getElementById("imagePreview");
+  const imagePreviewContainer = document.getElementById("imagePreviewContainer");
+  const removeImageBtn = document.getElementById("removeImageBtn");
+  const imageSizeLabel = document.getElementById("imageSizeLabel");
+
+  imageUpload.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // --- Validate type ---
+    if (!file.type.startsWith("image/")) {
+      alert("❌ Please select a valid image file (JPG, PNG, WEBP, GIF).");
+      e.target.value = "";
+      return;
+    }
+
+    // --- Validate size (WhatsApp max ~16MB) ---
+    if (file.size > 16 * 1024 * 1024) {
+      alert("❌ Image too large! WhatsApp allows up to 16MB.");
+      e.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      imageBase64 = event.target.result;   // Full data URL
+      imageMimeType = file.type;
+      imageFileName = file.name;
+
+      // Show preview
+      imagePreview.src = imageBase64;
+      imagePreviewContainer.style.display = "block";
+
+      // Show file size
+      const sizeKB = (file.size / 1024).toFixed(1);
+      const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+      imageSizeLabel.textContent = file.size > 1024 * 1024
+        ? `${sizeMB} MB`
+        : `${sizeKB} KB`;
+
+      addLocalLog(`📎 Image attached: ${file.name} (${imageSizeLabel.textContent})`, "info");
+
+      // Save to unlimitedStorage
+      saveState();
+    };
+
+    reader.onerror = () => {
+      alert("❌ Failed to read the image file. Please try again.");
+      e.target.value = "";
+    };
+
+    reader.readAsDataURL(file);
+  });
+
+  removeImageBtn.addEventListener("click", () => {
+    clearImage();
+    addLocalLog("🗑️ Image removed", "info");
+  });
+
+  // --- Restore saved image on popup open ---
+  chrome.storage.local.get(["imageBase64", "imageMimeType", "imageFileName"], (data) => {
+    if (data.imageBase64) {
+      imageBase64 = data.imageBase64;
+      imageMimeType = data.imageMimeType;
+      imageFileName = data.imageFileName || "image";
+
+      imagePreview.src = imageBase64;
+      imagePreviewContainer.style.display = "block";
+
+      // Estimate size from base64 length
+      const estimatedBytes = Math.round((data.imageBase64.length * 3) / 4);
+      const sizeKB = (estimatedBytes / 1024).toFixed(1);
+      imageSizeLabel.textContent = estimatedBytes > 1024 * 1024
+        ? `${(estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
+        : `${sizeKB} KB`;
+    }
+  });
+}
+
+function clearImage() {
+  imageBase64 = null;
+  imageMimeType = null;
+  imageFileName = null;
+
+  document.getElementById("imageUpload").value = "";
+  document.getElementById("imagePreviewContainer").style.display = "none";
+  document.getElementById("imageSizeLabel").textContent = "";
+
+  // Remove from storage too
+  chrome.storage.local.remove(["imageBase64", "imageMimeType", "imageFileName"]);
+}
+
 // ===== SEND TAB =====
 function initSend() {
   document.getElementById("startBtn").addEventListener("click", startSending);
@@ -281,33 +379,50 @@ function initSend() {
 }
 
 async function startSending() {
-  if (contacts.length === 0) return alert("No contacts loaded! Go to Contacts tab first.");
-  const msg = document.getElementById("messageInput").value.trim();
-  if (!msg) return alert("No message! Go to Message tab first.");
+  // --- Validation ---
+  if (contacts.length === 0) return alert("❌ No contacts loaded! Go to Contacts tab first.");
 
-  // Find WhatsApp Web tab
+  const msg = document.getElementById("messageInput").value.trim();
+  if (!msg && !imageBase64) return alert("❌ No message or image! Go to Message tab first.");
+
+  // --- Find WhatsApp Web tab ---
   const [waTab] = await chrome.tabs.query({ url: "https://web.whatsapp.com/*" });
-  if (!waTab) return alert("Please open web.whatsapp.com first!");
+  if (!waTab) return alert("❌ Please open web.whatsapp.com first!");
 
   const link = document.getElementById("inviteLink").value.trim();
   const useVariants = document.getElementById("useVariants").checked;
   const variants = document.getElementById("variantsInput").value.split("\n").filter(v => v.trim());
 
-  // Send START command to background
+  // --- Build campaign data ---
+  const campaignData = {
+    contacts: contacts,
+    message: msg,
+    link: link,
+    useVariants: useVariants,
+    variants: variants,
+    settings: settings,
+    waTabId: waTab.id,
+    hasImage: !!imageBase64   // Flag — actual image is read from storage
+  };
+
+  // --- If image exists, save it to storage first so background can access it ---
+  if (imageBase64) {
+    await chrome.storage.local.set({
+      campaignImage: imageBase64,
+      campaignImageMime: imageMimeType
+    });
+    addLocalLog(`📎 Image saved for campaign: ${imageFileName}`, "info");
+  } else {
+    await chrome.storage.local.remove(["campaignImage", "campaignImageMime"]);
+  }
+
+  // --- Send START command to background ---
   chrome.runtime.sendMessage({
     type: "START_CAMPAIGN",
-    data: {
-      contacts: contacts,
-      message: msg,
-      link: link,
-      useVariants: useVariants,
-      variants: variants,
-      settings: settings,
-      waTabId: waTab.id
-    }
+    data: campaignData
   });
 
-  // UI update
+  // --- UI Update ---
   document.getElementById("startBtn").disabled = true;
   document.getElementById("pauseBtn").disabled = false;
   document.getElementById("stopBtn").disabled = false;
@@ -319,7 +434,7 @@ async function togglePause() {
   const campaign = await chrome.runtime.sendMessage({ type: "GET_CAMPAIGN_STATE" });
   if (campaign && campaign.isPaused) {
     chrome.runtime.sendMessage({ type: "RESUME_CAMPAIGN" });
-    document.getElementById("pauseBtn").textContent = "⏸️ Pause";
+    document.getElementById("pauseBtn").textContent = "▶️ Resume";
   } else {
     chrome.runtime.sendMessage({ type: "PAUSE_CAMPAIGN" });
     document.getElementById("pauseBtn").textContent = "▶️ Resume";
@@ -391,7 +506,6 @@ function displayLog(entry) {
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   while (log.children.length > 200) log.removeChild(log.firstChild);
-
   logEntries.push(entry);
 }
 
@@ -421,7 +535,17 @@ function formatTime(seconds) {
 }
 
 function saveState() {
-  chrome.storage.local.set({ contacts, settings });
+  // Save contacts, settings, and image data — all to unlimitedStorage
+  const data = { contacts, settings };
+
+  // Only save image data if it exists
+  if (imageBase64) {
+    data.imageBase64 = imageBase64;
+    data.imageMimeType = imageMimeType;
+    data.imageFileName = imageFileName;
+  }
+
+  chrome.storage.local.set(data);
 }
 
 function loadState() {
@@ -429,4 +553,5 @@ function loadState() {
     if (data.contacts) { contacts = data.contacts; updateContactUI(); }
     if (data.settings) { settings = { ...settings, ...data.settings }; populateSettings(); }
   });
+  // Image is loaded separately in initImage()
 }

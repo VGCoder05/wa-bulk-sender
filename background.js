@@ -1,10 +1,11 @@
 // ============================================
-// WA BULK SENDER — BACKGROUND SERVICE WORKER
+// WA BULK SENDER — BACKGROUND SERVICE WORKER (v2)
 // Handles: sending loop, navigation, alarms
 // Survives popup close via chrome.alarms
+// NEW: Image + caption support
 // ============================================
 
-console.log("🟢 WA Bulk Sender: Background worker started");
+console.log("🟢 WA Bulk Sender: Background worker started (v2)");
 
 // ===== DEFAULT STATE =====
 const DEFAULT_CAMPAIGN = {
@@ -29,7 +30,8 @@ const DEFAULT_CAMPAIGN = {
   },
   waTabId: null,
   logs: [],
-  startTime: null
+  startTime: null,
+  hasImage: false          // NEW: flag for image campaign
 };
 
 // ===== ON INSTALL =====
@@ -81,12 +83,21 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   if (alarm.name === "wa-batch-resume") {
     await addLog("☕ Batch break over. Resuming...", "info");
-    await scheduleNext(1); // 1 second to start immediately after break
+    await scheduleNext(1);
   }
 });
 
 // ===== START CAMPAIGN =====
 async function startCampaign(data) {
+  // Verify image exists in storage if campaign has image
+  if (data.hasImage) {
+    const imgCheck = await chrome.storage.local.get(["campaignImage"]);
+    if (!imgCheck.campaignImage) {
+      await addLog("⚠️ Image flag set but no image found in storage!", "warning");
+      data.hasImage = false;
+    }
+  }
+
   const campaign = {
     ...DEFAULT_CAMPAIGN,
     isRunning: true,
@@ -103,11 +114,18 @@ async function startCampaign(data) {
     settings: data.settings,
     waTabId: data.waTabId,
     logs: [],
-    startTime: Date.now()
+    startTime: Date.now(),
+    hasImage: !!data.hasImage       // NEW
   };
 
   await chrome.storage.local.set({ campaign });
-  await addLog("🚀 Campaign started!", "info");
+
+  if (campaign.hasImage) {
+    await addLog("🚀 Campaign started (with image + caption)!", "info");
+  } else {
+    await addLog("🚀 Campaign started!", "info");
+  }
+
   await broadcastToPopup("CAMPAIGN_STARTED");
 
   // Start processing immediately
@@ -152,10 +170,7 @@ async function processNextContact() {
   // Check if we should stop
   if (!campaign.isRunning || campaign.isPaused) return;
   if (campaign.currentIndex >= campaign.contacts.length) {
-    await addLog(`🏁 All done! Sent: ${campaign.sent}, Failed: ${campaign.failed}`, "success");
-    campaign.isRunning = false;
-    await chrome.storage.local.set({ campaign });
-    await broadcastToPopup("CAMPAIGN_COMPLETE");
+    await finishCampaign(campaign);
     return;
   }
 
@@ -175,7 +190,6 @@ async function processNextContact() {
     const breakSec = campaign.settings.batchPause;
     await addLog(`☕ Batch break for ${breakSec}s...`, "warning");
     await broadcastToPopup("BATCH_BREAK");
-    // Schedule resume after break
     chrome.alarms.create("wa-batch-resume", { delayInMinutes: breakSec / 60 });
     return;
   }
@@ -186,7 +200,7 @@ async function processNextContact() {
   await addLog(`📤 [${idx + 1}/${campaign.contacts.length}] Sending to ${contact.name || contact.number}...`, "info");
   await broadcastToPopup("SENDING_TO", { contact, index: idx });
 
-  // Build message
+  // Build message text (used as text OR as image caption)
   let messageText = campaign.message;
   if (campaign.useVariants && campaign.variants.length > 0) {
     messageText = campaign.variants[Math.floor(Math.random() * campaign.variants.length)];
@@ -195,14 +209,25 @@ async function processNextContact() {
     .replace(/\{name\}/g, contact.name || "")
     .replace(/\{link\}/g, campaign.link);
 
-  // Send
-  let success = await sendOneMessage(campaign.waTabId, contact.number, messageText);
+  // ===== SEND: IMAGE or TEXT =====
+  let success = false;
+
+  if (campaign.hasImage) {
+    success = await sendImageMessage(campaign.waTabId, contact.number, messageText);
+  } else {
+    success = await sendTextMessage(campaign.waTabId, contact.number, messageText);
+  }
 
   // Auto-retry once on failure
   if (!success && campaign.settings.autoRetry) {
     await addLog(`🔄 Retrying ${contact.name || contact.number}...`, "warning");
     await sleep(5000);
-    success = await sendOneMessage(campaign.waTabId, contact.number, messageText);
+
+    if (campaign.hasImage) {
+      success = await sendImageMessage(campaign.waTabId, contact.number, messageText);
+    } else {
+      success = await sendTextMessage(campaign.waTabId, contact.number, messageText);
+    }
   }
 
   // Update campaign state
@@ -222,10 +247,7 @@ async function processNextContact() {
 
   // Check if done
   if (campaign.currentIndex >= campaign.contacts.length) {
-    await addLog(`🏁 All done! Sent: ${campaign.sent}, Failed: ${campaign.failed}`, "success");
-    campaign.isRunning = false;
-    await chrome.storage.local.set({ campaign });
-    await broadcastToPopup("CAMPAIGN_COMPLETE");
+    await finishCampaign(campaign);
     return;
   }
 
@@ -237,12 +259,24 @@ async function processNextContact() {
   await scheduleNext(delaySec);
 }
 
-// ===== SEND ONE MESSAGE =====
-async function sendOneMessage(tabId, number, messageText) {
-  try {
-    // Step 1: Navigate to WhatsApp send URL
-    const url = `https://web.whatsapp.com/send?phone=${number}&text=${encodeURIComponent(messageText)}`;
+// ===== FINISH CAMPAIGN =====
+async function finishCampaign(campaign) {
+  await addLog(`🏁 All done! Sent: ${campaign.sent}, Failed: ${campaign.failed}`, "success");
+  campaign.isRunning = false;
+  await chrome.storage.local.set({ campaign });
+  await broadcastToPopup("CAMPAIGN_COMPLETE");
 
+  // Cleanup campaign image from storage
+  chrome.storage.local.remove(["campaignImage", "campaignImageMime"]);
+}
+
+// ===========================================================
+// ===== SEND TEXT MESSAGE (your original flow, unchanged) ====
+// ===========================================================
+async function sendTextMessage(tabId, number, messageText) {
+  try {
+    // Step 1: Navigate to WhatsApp send URL (text pre-filled via URL)
+    const url = `https://web.whatsapp.com/send?phone=${number}&text=${encodeURIComponent(messageText)}`;
     await navigateTab(tabId, url);
 
     // Step 2: Wait for page to settle
@@ -263,7 +297,53 @@ async function sendOneMessage(tabId, number, messageText) {
     return response && response.success;
 
   } catch (err) {
-    console.error("sendOneMessage error:", err);
+    console.error("sendTextMessage error:", err);
+    return false;
+  }
+}
+
+// ===========================================================
+// ===== SEND IMAGE MESSAGE (NEW flow) ========================
+// ===========================================================
+// Strategy:
+//   1) Navigate to chat (NO &text= param — we type caption manually)
+//   2) Wait for content script
+//   3) Tell content script: "SEND_IMAGE" with caption text
+//   4) Content script reads image from chrome.storage.local
+//      (avoids message size limits for large base64 strings)
+//   5) Content script pastes image → types caption → clicks send
+// ===========================================================
+async function sendImageMessage(tabId, number, captionText) {
+  try {
+    // Step 1: Navigate to chat WITHOUT text param
+    const url = `https://web.whatsapp.com/send?phone=${number}`;
+    await navigateTab(tabId, url);
+
+    // Step 2: Wait for page to settle (image flow needs more time)
+    await sleep(5000);
+
+    // Step 3: Wait for content script
+    const alive = await waitForContentScript(tabId, 15);
+    if (!alive) {
+      console.error("Content script not ready for image send");
+      return false;
+    }
+
+    // Step 4: Extra settle time for chat to fully load
+    await sleep(3000);
+
+    // Step 5: Tell content script to handle image
+    // NOTE: We do NOT send imageBase64 in the message (too large!)
+    // Content script will read it from chrome.storage.local
+    const response = await sendToContentWithRetry(tabId, {
+      type: "SEND_IMAGE",
+      caption: captionText || ""
+    }, 2);
+
+    return response && response.success;
+
+  } catch (err) {
+    console.error("sendImageMessage error:", err);
     return false;
   }
 }
@@ -318,15 +398,12 @@ async function sendToContentWithRetry(tabId, message, maxRetries = 3) {
 
 // ===== SCHEDULE NEXT CONTACT =====
 async function scheduleNext(delaySec) {
-  // chrome.alarms minimum is ~0.5 minutes, so for short delays use setTimeout + alarm combo
   if (delaySec < 30) {
-    // Use setTimeout for short delays (service worker stays alive briefly)
     setTimeout(() => processNextContact(), delaySec * 1000);
   } else {
-    // Use alarm for longer delays (survives service worker sleep)
     chrome.alarms.create("wa-send-next", { delayInMinutes: delaySec / 60 });
   }
-  // Also set a backup alarm in case setTimeout gets killed
+  // Backup alarm in case setTimeout gets killed
   chrome.alarms.create("wa-send-next", { delayInMinutes: Math.max(delaySec / 60, 0.5) });
 }
 
@@ -349,11 +426,9 @@ async function addLog(message, type = "info") {
 
   const campaign = await getCampaign();
   campaign.logs.push(entry);
-  // Keep last 500 logs only
   if (campaign.logs.length > 500) campaign.logs = campaign.logs.slice(-500);
   await chrome.storage.local.set({ campaign });
 
-  // Also broadcast to popup if open
   await broadcastToPopup("LOG", entry);
 }
 

@@ -22,6 +22,31 @@
       <button class="tab" data-tab="settings">⚙️ Settings</button>
     </div>
 
+    <!-- ===== IMAGE ATTACHMENT SECTION ===== -->
+<div class="image-upload-section" style="margin-top: 12px;">
+  <label style="font-weight: 600; font-size: 13px; color: #fff;">
+    📎 Attach Image (optional):
+  </label>
+
+  <div style="margin-top: 6px; display: flex; align-items: center; gap: 10px;">
+    <input type="file" id="imageUpload" accept="image/*"
+      style="font-size: 12px;" />
+    <span id="imageSizeLabel" style="font-size: 11px; color: #667781;"></span>
+  </div>
+
+  <div id="imagePreviewContainer" style="display:none; margin-top: 10px;
+    padding: 10px; background: #f0f2f5; border-radius: 10px; text-align: center;">
+    <img id="imagePreview" style="max-width: 220px; max-height: 160px;
+      border-radius: 8px; border: 1px solid #d1d7db;" />
+    <br />
+    <button id="removeImageBtn" style="margin-top: 8px; padding: 4px 14px;
+      background: #ea0038; color: white; border: none; border-radius: 6px;
+      cursor: pointer; font-size: 12px;">
+      ❌ Remove Image
+    </button>
+  </div>
+</div>
+
     <!-- CONTACTS TAB -->
     <div class="tab-content active" id="contacts">
       <div class="section">
